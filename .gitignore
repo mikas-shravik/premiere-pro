@@ -1,0 +1,5 @@
+# generated media
+ai-footage/incoming/
+ai-footage/edit_ready/
+__pycache__/
+.DS_Store

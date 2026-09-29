@@ -1,0 +1,4 @@
+shot,prompt,negative,seed,duration,aspect,takes
+SC01_SH010,"Wide establishing shot, rain-soaked neon street at night, slow push-in, reflections on wet asphalt, cinematic, 35mm",blurry low quality,,5,16:9,2
+SC01_SH020,"Close-up of a coffee cup on a café table, steam rising, soft morning window light, shallow depth of field",,1234,5,16:9,1
+SC02_SH010,"Aerial drone shot gliding over misty green hills at sunrise, golden light, smooth forward motion",,,5,16:9,1
