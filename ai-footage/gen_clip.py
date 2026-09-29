@@ -2,6 +2,8 @@
 """Generate AI video clips into an editor-friendly folder.
 
 Backends:
+  local    - any command-line generator on this machine (free). Ships with an
+             "ltx-mac" preset: LTX-2.3 int4 on Apple Silicon via MLX
   comfyui  - your own ComfyUI running locally (free, uses your GPU)
   fal      - fal.ai hosted API (pay per clip, free signup credit)
 
@@ -10,6 +12,7 @@ holding the prompt, seed, backend and model, so you always know how a shot
 was made. conform.py later reads those sidecars.
 
 Examples:
+  python3 gen_clip.py local --shot SC01_SH005 --prompt "waves crashing on black rocks, golden hour"
   python gen_clip.py comfyui --workflow workflows/wan22_api.json \
       --shot SC01_SH010 --prompt "slow push-in on a rain-soaked neon street"
   python gen_clip.py fal --shot SC01_SH020 --prompt "drone shot over misty hills"
@@ -21,6 +24,8 @@ import json
 import os
 import random
 import re
+import shlex
+import subprocess
 import sys
 import time
 from datetime import datetime, timezone
@@ -54,6 +59,37 @@ def write_sidecar(video: Path, info: dict) -> None:
             "created": datetime.now(timezone.utc).isoformat(timespec="seconds"),
             **info}
     video.with_suffix(".json").write_text(json.dumps(info, indent=2, ensure_ascii=False), encoding="utf-8")
+
+
+# --- Any local command-line generator ---------------------------------------
+
+LTX_MLX_DIR = os.path.expanduser(os.environ.get("LTX_MLX_DIR", "~/ltx-2-mlx"))
+PRESETS = {
+    # LTX-2.3 int4 (~12 GB) on MLX: fits 16-24 GB Macs, makes audio too.
+    # 97 frames @ 24 fps = 4 s; frame counts must be 8k+1 (49, 97, 121...).
+    "ltx-mac": f"uv run --project {shlex.quote(LTX_MLX_DIR)} ltx-2-mlx generate "
+               "--model dgrauet/ltx-2.3-mlx-q4 --two-stage -f 97 --frame-rate 24 "
+               "--seed {seed} --prompt {prompt} -o {output}",
+}
+
+
+def run_local(prompt, seed, dest, cmd, negative="", **_):
+    """cmd is a template; {prompt} {seed} {output} {negative} become single
+    arguments, so prompts with spaces or quotes are passed through intact."""
+    template = PRESETS.get(cmd, cmd)
+    values = {"prompt": prompt, "seed": str(seed), "output": str(dest), "negative": negative}
+    args = [tok.format(**values) for tok in shlex.split(template)]
+    print("  running: " + " ".join(shlex.quote(a) for a in args[:6]) + " ...", flush=True)
+    try:
+        code = subprocess.run(args).returncode
+    except FileNotFoundError:
+        sys.exit(f"'{args[0]}' not found. Install it first (README: Local generation on a Mac).")
+    if code != 0:
+        sys.exit("Local generator failed (see its output above).")
+    if not dest.exists():
+        sys.exit(f"Generator finished but {dest} was not created. Does your command "
+                 "write to {output}?")
+    return dest, {"backend": "local", "model": cmd if cmd in PRESETS else args[0]}
 
 
 # --- ComfyUI (local) -------------------------------------------------------
@@ -160,7 +196,7 @@ def run_fal(prompt, seed, dest, model, duration=None, aspect=None, negative="", 
     return dest, {"backend": "fal", "model": model, "seed": result.get("seed", seed)}
 
 
-BACKENDS = {"comfyui": run_comfyui, "fal": run_fal}
+BACKENDS = {"local": run_local, "comfyui": run_comfyui, "fal": run_fal}
 
 
 def generate(backend, shot, prompt, out_dir, seed=None, **opts):
@@ -182,9 +218,12 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--out", default=DEFAULT_OUT, help="output folder (default: ./incoming)")
-    sub = ap.add_subparsers(dest="cmd", required=True)
+    sub = ap.add_subparsers(dest="action", required=True)
 
     def backend_opts(p):
+        p.add_argument("--cmd", default=os.environ.get("LOCAL_CMD", "ltx-mac"),
+                       help=f"[local] preset ({', '.join(PRESETS)}) or command template "
+                            "using {prompt} {seed} {output} {negative}")
         p.add_argument("--workflow", help="[comfyui] API-format workflow JSON")
         p.add_argument("--host", default=os.environ.get("COMFYUI_HOST", "http://127.0.0.1:8188"),
                        help="[comfyui] server address")
@@ -207,12 +246,13 @@ def main():
     backend_opts(p)
 
     a = ap.parse_args()
-    if (a.cmd == "comfyui" or getattr(a, "backend", None) == "comfyui") and not a.workflow:
+    if (a.action == "comfyui" or getattr(a, "backend", None) == "comfyui") and not a.workflow:
         ap.error("comfyui needs --workflow")
-    common = {"workflow": a.workflow, "host": a.host.rstrip("/"), "model": a.model}
+    common = {"workflow": a.workflow, "host": a.host.rstrip("/"), "model": a.model,
+              "cmd": a.cmd}
 
-    if a.cmd != "batch":
-        generate(a.cmd, a.shot, a.prompt, a.out, a.seed, negative=a.negative,
+    if a.action != "batch":
+        generate(a.action, a.shot, a.prompt, a.out, a.seed, negative=a.negative,
                  duration=a.duration, aspect=a.aspect, **common)
         return
 

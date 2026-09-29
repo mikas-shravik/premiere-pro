@@ -14,40 +14,73 @@ The XML import gives you:
 - **An "AI Clips" bin** with every take. The prompt is in the *Description* column, the shot name in *Scene*, and the model and seed in *Log Note*, so you can always regenerate a shot.
 - **An "AI Assembly" sequence** with the newest take of each shot, in shot order. It's a rough cut ready to trim.
 
-## One-time setup
+## One-time setup (Mac)
 
-1. **Python 3.10+**: install it from python.org, then run `pip install -r requirements.txt`.
-2. **ffmpeg**:
-   - Windows: `winget install ffmpeg`
-   - Mac: `brew install ffmpeg`
-3. **A generator.** Pick at least one:
-   - **Local (free):** install [ComfyUI Desktop](https://www.comfy.org/download). See the next section.
-   - **API:** make a [fal.ai](https://fal.ai) account and create an API key. Then set it:
-     - Windows: `setx FAL_KEY "your-key"`
-     - Mac: add `export FAL_KEY=your-key` to `~/.zshrc`
-
-## Using a local model (ComfyUI)
-
-1. In ComfyUI, open **Workflow › Browse Templates** and pick a video template, for example *Wan 2.2 5B text-to-video* or *LTX Video*. ComfyUI offers to download the model files.
-2. In the positive prompt box, type exactly `{{PROMPT}}`.
-   - In the sampler's `seed` field, you can also put `{{SEED}}`. Convert the widget to an input first if it only accepts numbers.
-   - A negative prompt box can take `{{NEGATIVE}}`.
-3. Choose **Workflow › Export (API)** and save the file as `ai-footage/workflows/wan22_api.json`.
-4. With ComfyUI running, run:
+In Terminal:
 
 ```bash
-cd ai-footage
-python gen_clip.py comfyui --workflow workflows/wan22_api.json \
-    --shot SC01_SH010 --prompt "slow push-in on a rain-soaked neon street at night"
+# Homebrew, if you don't have it yet: https://brew.sh
+brew install python ffmpeg uv
+cd premiere-pro
+python3 -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
 ```
 
-You can save any workflow this way, including image-to-video, upscaler chains and LoRAs. The script only fills in the placeholders.
+In each new Terminal window, run `source premiere-pro/.venv/bin/activate` before using the scripts.
+
+For fal.ai, add `export FAL_KEY=your-key` to `~/.zshrc`, then open a new Terminal window.
+
+## Local generation on a Mac (free)
+
+Your MacBook Pro M4 with 24 GB runs video models on its GPU through Apple's
+**MLX** framework. MLX is much better than ComfyUI on a Mac, where FP8
+checkpoints don't run and Wan video currently comes out corrupted.
+
+**One-time install of LTX-2.3 for MLX.** It generates video *with synced audio*.
+
+```bash
+git clone https://github.com/dgrauet/ltx-2-mlx.git ~/ltx-2-mlx
+cd ~/ltx-2-mlx && uv sync --all-extras
+```
+
+The first generation downloads the int4 model, about 12 GB. It fits in
+24 GB. If macOS shows memory pressure, add `--low-ram` to the preset in
+`gen_clip.py`.
+
+**Generate:**
+
+```bash
+cd premiere-pro/ai-footage
+python3 gen_clip.py local --shot SC01_SH010 \
+    --prompt "slow push-in on a rain-soaked neon street at night, reflections, cinematic"
+```
+
+The `ltx-mac` preset makes 4-second clips (97 frames at 24 fps, 704×480).
+Budget several minutes or more per clip on a base M4. That's fine for
+b-roll and drafts running overnight from a shot list. Use Magnific or
+fal.ai for hero shots.
+
+**Any other command-line generator** works too. Pass a template, and
+`{prompt}`, `{seed}`, `{output}` and `{negative}` get filled in:
+
+```bash
+python3 gen_clip.py local --cmd "python3 -m mlx_video.wan_2.generate --model-dir ~/models/wan22_mlx \
+    --prompt {prompt} --seed {seed} --output-path {output}"
+```
+
+## Using ComfyUI (better suited to Windows/NVIDIA machines)
+
+1. In ComfyUI, open **Workflow › Browse Templates** and pick a video template.
+2. In the positive prompt box, type exactly `{{PROMPT}}`.
+   - The sampler's `seed` field can take `{{SEED}}`, and a negative prompt box can take `{{NEGATIVE}}`.
+3. Choose **Workflow › Export (API)** and save the file as `ai-footage/workflows/my_api.json`.
+4. Run `python3 gen_clip.py comfyui --workflow workflows/my_api.json --shot SC01_SH010 --prompt "..."`
 
 ## Using fal.ai (API)
 
 ```bash
-python gen_clip.py fal --shot SC01_SH020 --prompt "drone shot over misty hills at sunrise"
-python gen_clip.py fal --model <model-id-from-fal.ai> --duration 5 --aspect 16:9 ...
+python3 gen_clip.py fal --shot SC01_SH020 --prompt "drone shot over misty hills at sunrise"
+python3 gen_clip.py fal --model <model-id-from-fal.ai> --duration 5 --aspect 16:9 ...
 ```
 
 The default model is `fal-ai/ltx-video`, which is cheap and fast. To use a different model, copy its ID from that model's page on fal.ai. Parameters like `--duration` and `--aspect` are only sent when you pass them, because not every model accepts them.
@@ -64,15 +97,15 @@ Copy `ai-footage/shots.example.csv` and edit it in Excel or Google Sheets:
 | `takes` | how many variations to generate (default 1) |
 
 ```bash
-python gen_clip.py batch myshots.csv --backend comfyui --workflow workflows/wan22_api.json
+python3 gen_clip.py batch myshots.csv --backend local      # or --backend fal
 ```
 
 ## Conform for editing
 
 ```bash
-python conform.py --fps 25                                     # ProRes 422, native size
-python conform.py --fps 23.976 --codec dnxhr --size 1920x1080  # DNxHR HQ, crop-fill to 1080p
-python conform.py --fps 25 --motion interp                     # smooth out 16 fps Wan clips
+python3 conform.py --fps 25                                     # ProRes 422, native size
+python3 conform.py --fps 23.976 --codec dnxhr --size 1920x1080  # DNxHR HQ, crop-fill to 1080p
+python3 conform.py --fps 25 --motion interp                     # smooth out 16 fps Wan clips
 ```
 
 - `--motion dup` (the default) keeps real-time speed by dropping or duplicating frames.
@@ -90,16 +123,15 @@ If Claude has a video-generation connector, you can ask it in chat, for example:
 
 Free tiers change often, so check each site before relying on it.
 
-**Local, on your own GPU. Free and unlimited, with no watermark.**
+**Local on your Mac (M4, 24 GB). Free and unlimited, with no watermark.**
 
-| Model | Min VRAM (approx.) | Notes |
+| Option | Fits 24 GB? | Notes |
 |---|---|---|
-| Wan 2.2 5B (GGUF) | ~8 GB | Apache 2.0 license (commercial use OK). Best starting point for 8–12 GB cards. Outputs 16 fps; conform with `--motion interp` |
-| HunyuanVideo 1.5 | ~14 GB (FP8 + offload) | Strong realism on a 16–24 GB card |
-| CogVideoX 2B / 5B | 16 / 24 GB | Older but lightweight |
-| LTX-2.x | 32 GB+ distilled | Generates synced audio with the video. Heavy; free for commercial use under $10M revenue |
-
-All four run in ComfyUI, and most have one-click templates. With 8–12 GB of VRAM you'll get short 480p–720p clips. With 24 GB you can run almost everything.
+| **LTX-2.3 int4 via [ltx-2-mlx](https://github.com/dgrauet/ltx-2-mlx)** | ✅ ~12 GB | The `ltx-mac` preset. Video and audio together. Free for commercial use under $10M revenue |
+| Wan 2.2 TI2V-5B / Wan 2.1 1.3B via [mlx-video](https://github.com/Blaizzy/mlx-video) | ✅ | Apache 2.0 license. Needs a weight-conversion step; use it with `--cmd` |
+| [ltx-video-mac](https://github.com/james-see/ltx-video-mac) app | ✅ (int4) | A point-and-click Mac app for the same LTX models, if you'd rather not use Terminal |
+| LTX-2.3 int8 / bf16 | ❌ | Needs 32 GB / 64 GB+ |
+| Anything FP8 in ComfyUI | ❌ | Metal can't run FP8 models |
 
 **Free hosted tiers (no GPU needed)**
 - **Kling AI:** 66 credits/day, about 2–6 clips. They're 720p and watermarked, and not licensed for commercial use.
