@@ -11,6 +11,7 @@ to Claude's settings. Standard library only, Python 3.9+.
 """
 import base64
 import json
+import math
 import os
 import re
 import sys
@@ -38,11 +39,16 @@ INSTRUCTIONS = """Storyboard is the user's storyboard and moodboard app for plan
 - Shots are coded like SC01_SH020 (scene 1, shot 20). When the user says "this shot" or "the selected one", call get_selection.
 - Each shot has a version tree: first references are versions 1, 2, 3; variations made from version 1 are 1.1, 1.2, and so on. Exactly one version can be Picked, and it is the shot's frame.
 - The user circles, boxes or draws on images and attaches numbered notes saying what to change. Read them with get_feedback, and look at the marked-up image with view_images.
-- To answer feedback, call create_version under the version being revised. Give it a complete, self-contained prompt that keeps what worked and fixes each note, including the project look. Then call reply_to_notes to say how you handled each note. You can't generate images: the user generates the prompt in Higgsfield and drops the result onto your new version.
+- To answer feedback, call create_version under the version being revised. Give it a complete, self-contained prompt that keeps what worked and fixes each note, including the project look. Then call reply_to_notes to say how you handled each note. The user generates the prompt in Higgsfield and drops the result onto your new version, or gives it to you to add.
+- You can put images and clips on the board: pass web links (https://…) or file and folder paths on this computer to add_media_to_shot, add_shots_from_media or add_media_to_moodboard. If another tool generates an image or clip for you and gives you a link, add it the same way, under the version whose prompt you used. An image you can only see in the chat can't be passed to these tools; ask for its location instead (in Finder: select the file and press Option-Command-C to copy its path) or a link.
 - Your edits appear live in the user's open Storyboard window, and they can undo them there. Don't delete anything unless the user asks you to."""
 
 
 class ToolError(Exception):
+    pass
+
+
+class Offline(ToolError):
     pass
 
 
@@ -60,12 +66,12 @@ def now_ms():
 
 # --- talking to Storyboard ---------------------------------------------------
 
-def http(method, path, body=None, headers=None, raw=False):
+def http(method, path, body=None, headers=None, raw=False, timeout=30):
     data = None if body is None else json.dumps(body).encode()
     req = urllib.request.Request(BASE + path, data=data, method=method,
                                  headers={"X-Storyboard": "1", "Content-Type": "application/json", **(headers or {})})
     try:
-        with OPENER.open(req, timeout=30) as r:
+        with OPENER.open(req, timeout=timeout) as r:
             payload = r.read()
             return payload if raw else json.loads(payload or b"{}")
     except urllib.error.HTTPError as e:
@@ -77,7 +83,7 @@ def http(method, path, body=None, headers=None, raw=False):
             msg = str(e)
         raise ToolError(f"Storyboard said: {msg}") from None
     except (urllib.error.URLError, OSError):
-        raise ToolError("Storyboard isn't running on this computer. Ask the user to start it "
+        raise Offline("Storyboard isn't running on this computer. Ask the user to start it "
                         "(the python3 command in Terminal, or the Storyboard app), then try again.") from None
 
 
@@ -306,6 +312,88 @@ def tree_text(p, shot):
     return "\n".join(lines) or "(no versions yet)"
 
 
+# --- media ---------------------------------------------------------------------
+
+def gather(pid, sources):
+    """Copy images and clips from links or paths on this computer into the
+    project. Returns (media refs, problems)."""
+    if isinstance(sources, str):
+        sources = [sources]
+    refs, problems = [], []
+    for src in [str(x).strip() for x in sources or [] if str(x).strip()][:60]:
+        try:
+            if re.match(r"(?i)https?://", src):
+                got = [http("POST", f"/api/projects/{pid}/fetch", {"url": src, "info": True}, timeout=300)]
+            elif src.startswith("data:"):
+                raise ToolError("pass a link or a file path, not image data")
+            else:
+                res = http("POST", f"/api/projects/{pid}/import-path", {"path": src}, timeout=300)
+                got = res["items"]
+                if res.get("more"):
+                    problems.append(f"{clip(src, 80)}: took the first {len(got)} files; {res['more']} more were left out")
+        except Offline:
+            raise
+        except ToolError as e:
+            msg = str(e).replace("Storyboard said: ", "")
+            problems.append(msg if src in msg or src.strip("'\"") in msg else f"{clip(src, 80)}: {msg}")
+            continue
+        for r in got:
+            if r.get("kind") == "audio":
+                problems.append(f"{r.get('name')}: music goes in the Animatic tab, not on shots or moodboards")
+            else:
+                refs.append(r)
+    if not refs:
+        raise ToolError("Nothing was added. " + ("; ".join(problems) or "Pass at least one link or file path."))
+    return refs, problems
+
+
+def media_ref(r):
+    return {k: r[k] for k in ("src", "kind", "w", "h", "duration", "name") if r.get(k) is not None}
+
+
+def pick_version(p, shot, v, touched):
+    """Make v the shot's pick and frame; an earlier pick becomes an option."""
+    for o in versions_of(p, shot["id"]):
+        if o.get("status") == "picked" and o is not v:
+            o["status"] = "option"
+    v["status"] = "picked"
+    if v.get("media"):
+        shot["frame"] = dict(v["media"])
+        if v["media"].get("kind") == "video" and shot.get("status") in ("idea", "prompt"):
+            shot["status"] = "generated"
+        touched.append(shot["id"])
+
+
+def new_version(p, shot, parent, **over):
+    v = {"id": uid("v_"), "shot": shot["id"], "parent": parent["id"] if parent else None,
+         "label": next_label(p, shot["id"], parent), "media": None, "prompt": "", "note": "", "status": "new",
+         "by": "you", "created": now_ms(), "marks": [], "markedSrc": None}
+    v.update(over)
+    p["versions"].append(v)
+    return v
+
+
+def lay_out(refs, x0, y0, max_w, box=320):
+    """Moodboard items in rows, each fitted into a box×box square."""
+    items, x, y, row_h = [], 0, 0, 0
+    for r in refs:
+        ratio = r["h"] / r["w"] if r.get("w") and r.get("h") else 9 / 16
+        w = box if ratio <= 1 else round(box / ratio)
+        if x and x + w > max_w:
+            x, y, row_h = 0, y + row_h + 24, 0
+        it = {"id": uid("it_"), "type": "video" if r.get("kind") == "video" else "image", "src": r["src"],
+              "x": x0 + x, "y": y0 + y, "w": w, "h": round(w * ratio),
+              "mw": r.get("w"), "mh": r.get("h"), "duration": r.get("duration"), "name": r.get("name")}
+        items.append({k: v for k, v in it.items() if v is not None})
+        x += w + 24
+        row_h = max(row_h, it["h"])
+    return items
+
+
+def done_msg(msg, problems):
+    return msg + ("\nNot added: " + "; ".join(problems) if problems else "")
+
+
 # --- tools ---------------------------------------------------------------------
 
 def t_list_projects(_):
@@ -494,6 +582,30 @@ def t_update_shot(args):
     return edit(pid, fn, f"updated {args.get('shot')} ({', '.join(fields)})")
 
 
+def insertion_point(p, args):
+    """(scene, index) for new shots: after args.after, else at the end of args.scene or the last scene."""
+    if args.get("after"):
+        scene, after = find_shot(p, args["after"])
+        return scene, scene["shots"].index(after) + 1
+    scene = find_scene(p, args.get("scene") or "") if args.get("scene") else (p["scenes"][-1] if p["scenes"] else None)
+    if scene is None:
+        scene = {"id": uid("sc_"), "number": 1, "title": "", "synopsis": "", "collapsed": False, "shots": []}
+        p["scenes"].append(scene)
+    return scene, len(scene["shots"])
+
+
+def insert_shot(scene, index, shot):
+    before = scene["shots"][index - 1]["number"] if index > 0 else 0
+    after_n = scene["shots"][index]["number"] if index < len(scene["shots"]) else None
+    n = number_between(before, after_n)
+    scene["shots"].insert(index, shot)
+    if n is None:
+        for i, s in enumerate(scene["shots"]):
+            s["number"] = (i + 1) * 10
+    else:
+        shot["number"] = n
+
+
 def t_add_shots(args):
     pid = resolve_project(args.get("project"))
     specs = args.get("shots") or []
@@ -501,27 +613,11 @@ def t_add_shots(args):
         raise ToolError("Pass at least one shot.")
 
     def fn(p, touched):
-        if args.get("after"):
-            scene, after = find_shot(p, args["after"])
-            index = scene["shots"].index(after) + 1
-        else:
-            scene = find_scene(p, args.get("scene") or "") if args.get("scene") else (p["scenes"][-1] if p["scenes"] else None)
-            if scene is None:
-                scene = {"id": uid("sc_"), "number": 1, "title": "", "synopsis": "", "collapsed": False, "shots": []}
-                p["scenes"].append(scene)
-            index = len(scene["shots"])
+        scene, index = insertion_point(p, args)
         made = []
         for spec in specs:
             shot = new_shot(p, shot_fields(spec))
-            before = scene["shots"][index - 1]["number"] if index > 0 else 0
-            after_n = scene["shots"][index]["number"] if index < len(scene["shots"]) else None
-            n = number_between(before, after_n)
-            scene["shots"].insert(index, shot)
-            if n is None:
-                for i, s in enumerate(scene["shots"]):
-                    s["number"] = (i + 1) * 10
-            else:
-                shot["number"] = n
+            insert_shot(scene, index, shot)
             index += 1
             made.append(shot)
             touched.append(shot["id"])
@@ -590,10 +686,7 @@ def t_create_version(args):
             parent = next((v for v in vs if v["id"] == pres.get("version")), None) \
                 or next((v for v in vs if v.get("status") == "picked"), None) \
                 or max(vs, key=lambda v: v.get("created", 0), default=None)
-        v = {"id": uid("v_"), "shot": shot["id"], "parent": parent["id"] if parent else None,
-             "label": next_label(p, shot["id"], parent), "media": None, "prompt": args["prompt"].strip(),
-             "note": args.get("note", ""), "status": "new", "by": "claude", "created": now_ms(), "marks": [], "markedSrc": None}
-        p["versions"].append(v)
+        v = new_version(p, shot, parent, prompt=args["prompt"].strip(), note=args.get("note", ""), by="claude")
         touched += [v["id"], shot["id"]]
         resolved = []
         if parent and args.get("resolves"):
@@ -626,12 +719,7 @@ def t_update_version(args):
         st = args.get("status")
         if st:
             if st == "picked":
-                for o in versions_of(p, shot["id"]):
-                    if o.get("status") == "picked" and o is not v:
-                        o["status"] = "option"
-                if v.get("media"):
-                    shot["frame"] = dict(v["media"])
-                    touched.append(shot["id"])
+                pick_version(p, shot, v, touched)
             v["status"] = st
             changed.append(f"status {VERSION_STATUS[st]}")
         touched.append(v["id"])
@@ -700,7 +788,121 @@ def t_set_project_look(args):
     return edit(pid, fn, "updated the project look")
 
 
+def t_add_media_to_shot(args):
+    pid = resolve_project(args.get("project"))
+    p = load(pid)  # check the names before downloading anything
+    _, shot = find_shot(p, args.get("shot"))
+    for key in ("version", "parent"):
+        if args.get(key):
+            find_version(p, shot, args[key])
+    refs, problems = gather(pid, args.get("sources"))
+
+    def fn(p, touched):
+        scene, shot = find_shot(p, args.get("shot"))
+        target = find_version(p, shot, args["version"]) if args.get("version") else None
+        if target and target.get("media"):
+            raise ToolError(f"v{target['label']} already has an image. To add variations of it, "
+                            f"pass parent \"{target['label']}\" instead of version.")
+        if target:
+            parent = next((v for v in p["versions"] if v["id"] == target.get("parent")), None)
+        else:
+            parent = find_version(p, shot, args["parent"]) if args.get("parent") else None
+        prompt = args.get("prompt") or (target or {}).get("prompt") or ""
+        made, todo = [], list(refs)
+        if target:
+            target["media"] = media_ref(todo.pop(0))
+            target["prompt"] = target.get("prompt") or prompt
+            target["note"] = target.get("note") or args.get("note", "")
+            made.append(target)
+        for i, r in enumerate(todo):
+            made.append(new_version(p, shot, parent, media=media_ref(r), prompt=prompt,
+                                    note=args.get("note", ""), created=now_ms() + i))
+        nothing_picked = not shot.get("frame") and not any(v.get("status") == "picked" for v in versions_of(p, shot["id"]))
+        if args.get("pick") or nothing_picked:
+            pick_version(p, shot, made[0], touched)
+        touched += [v["id"] for v in made] + [shot["id"]]
+        labels = ", ".join(f"v{v['label']}" for v in made)
+        where = f"under v{parent['label']}" if parent else "as first references"
+        msg = f"Added {len(made)} image(s)/clip(s) to {code(scene, shot)}: {labels} ({'filled' if target else where})."
+        if made[0].get("status") == "picked":
+            msg += f" v{made[0]['label']} is now the shot's frame."
+        return done_msg(msg, problems)
+    return edit(pid, fn, f"added {len(refs)} image{'s' if len(refs) != 1 else ''} to {args.get('shot')}")
+
+
+def t_add_shots_from_media(args):
+    pid = resolve_project(args.get("project"))
+    insertion_point(load(pid), args)
+    refs, problems = gather(pid, args.get("sources"))
+
+    def fn(p, touched):
+        scene, index = insertion_point(p, args)
+        made = []
+        for i, r in enumerate(refs):
+            shot = new_shot(p, {"frame": None, "status": "idea"})
+            insert_shot(scene, index + i, shot)
+            v = new_version(p, shot, None, media=media_ref(r), created=now_ms() + i)
+            pick_version(p, shot, v, touched)
+            made.append(shot)
+            touched += [shot["id"], v["id"]]
+        return done_msg(f"Added {len(made)} shot(s) in {scene_code(scene)}, one per image/clip: "
+                        + ", ".join(code(scene, s) for s in made), problems)
+    return edit(pid, fn, f"added {len(refs)} shot{'s' if len(refs) != 1 else ''} from images")
+
+
+def t_add_media_to_moodboard(args):
+    pid = resolve_project(args.get("project"))
+    refs, problems = gather(pid, args.get("sources"))
+
+    def fn(p, touched):
+        boards = p["boards"]
+        if not boards:
+            boards.append({"id": uid("bd_"), "name": "Moodboard", "items": [], "links": [], "view": {"x": 0, "y": 0, "z": 1}})
+        board = boards[0]
+        if args.get("board"):
+            key = args["board"].lower()
+            board = next((b for b in boards if key in (b.get("name") or "").lower()), board)
+        items = board.setdefault("items", [])
+        sec = None
+        if args.get("section"):
+            key = args["section"].lower()
+            sec = next((i for i in items if i.get("type") == "section" and key in (i.get("title") or "").lower()), None)
+        cols = min(4, math.ceil(math.sqrt(len(refs))))
+        if sec:
+            def inside(i):
+                cx, cy = i.get("x", 0) + i.get("w", 0) / 2, i.get("y", 0) + i.get("h", 0) / 2
+                return sec["x"] <= cx <= sec["x"] + sec["w"] and sec["y"] <= cy <= sec["y"] + sec["h"]
+            below = max([i["y"] + i.get("h", 0) for i in items if i is not sec and i.get("type") != "section" and inside(i)]
+                        or [sec["y"] + 32])
+            room = sec["w"] - 48
+            new = lay_out(refs, sec["x"] + 24, below + 24, room, box=max(120, min(320, (room - 24) // 2)))
+            bottom = max(i["y"] + i["h"] for i in new) + 24
+            grow = bottom - (sec["y"] + sec["h"])
+            if grow > 0:  # make room: push whatever sits under the section down
+                edge = sec["y"] + sec["h"]
+                for i in items:
+                    if i is not sec and i.get("y", 0) >= edge - 1 and i.get("x", 0) < sec["x"] + sec["w"] and i.get("x", 0) + i.get("w", 0) > sec["x"]:
+                        i["y"] += grow
+                sec["h"] += grow
+            touched.append(sec["id"])
+        else:
+            right = max([i.get("x", 0) + i.get("w", 0) for i in items] or [0]) + 80
+            top = min([i.get("y", 0) for i in items] or [0])
+            new = lay_out(refs, right, top, cols * 344)
+        items.extend(new)
+        touched += [i["id"] for i in new]
+        where = f"the “{sec.get('title')}” section of " if sec else ""
+        msg = f"Added {len(new)} image(s)/clip(s) to {where}the “{board.get('name')}” moodboard."
+        if args.get("section") and not sec:
+            msg += f" There's no section called “{args['section']}”, so they went to the right of everything else."
+        return done_msg(msg, problems)
+    return edit(pid, fn, f"added {len(refs)} image{'s' if len(refs) != 1 else ''} to the moodboard")
+
+
 PROJECT = {"type": "string", "description": "Project name or id. Omit to use the project open in Storyboard."}
+SOURCES = {"type": "array", "items": {"type": "string"},
+           "description": "Web links (https://…) to images or clips, or full paths on this computer to files or folders "
+                          "(/Users/…/frame.png, ~/Downloads/renders/). A folder adds every image and clip in it, by name."}
 SHOT = {"type": "string", "description": "Shot code like SC01_SH020, or \"selected\" for the shot selected in Storyboard."}
 VERSION = {"type": "string", "description": "Version label like 1.2, or \"selected\" or \"picked\"."}
 SHOT_PROPS = {
@@ -775,6 +977,24 @@ TOOLS = [
           "board": {"type": "string", "description": "Moodboard name. Default: the first board."},
           "color": {"type": "string", "enum": ["yellow", "orange", "pink", "purple", "blue", "green", "gray"]}},
          ["notes"], fn=t_add_moodboard_notes, readonly=False),
+    tool("add_media_to_shot", "Put images or clips into a shot's version tree: as first references, as variations under a version, or as the image for a version that has none yet (like one you wrote with create_version). The first one becomes the frame if the shot has none.",
+         {"project": PROJECT, "shot": SHOT, "sources": SOURCES,
+          "version": {**VERSION, "description": "Fill this version, which has no image yet. Extra sources become its siblings."},
+          "parent": {**VERSION, "description": "Add the images as variations under this version."},
+          "pick": {"type": "boolean", "description": "Make the first one the picked version and the shot's frame."},
+          "prompt": {"type": "string", "description": "The prompt the images were made with, if known."},
+          "note": {"type": "string"}},
+         ["shot", "sources"], fn=t_add_media_to_shot, readonly=False),
+    tool("add_shots_from_media", "Make one new shot per image or clip, with it as the shot's frame. Added after a given shot or at the end of a scene.",
+         {"project": PROJECT, "sources": SOURCES,
+          "after": {"type": "string", "description": "Insert after this shot code."},
+          "scene": {"type": "string", "description": "Or: add at the end of this scene, e.g. SC02."}},
+         ["sources"], fn=t_add_shots_from_media, readonly=False),
+    tool("add_media_to_moodboard", "Put images or clips on a moodboard, optionally inside one of its sections (e.g. Locations).",
+         {"project": PROJECT, "sources": SOURCES,
+          "board": {"type": "string", "description": "Moodboard name. Default: the first board."},
+          "section": {"type": "string", "description": "Section title to place them in; it grows to fit."}},
+         ["sources"], fn=t_add_media_to_moodboard, readonly=False),
     tool("set_project_look", "Set the project's look/style prefix (added to every prompt) and default negative prompt.",
          {"project": PROJECT, "look": {"type": "string"}, "negative": {"type": "string"}}, fn=t_set_project_look, readonly=False),
 ]

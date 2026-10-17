@@ -26,6 +26,7 @@ import re
 import secrets
 import shlex
 import shutil
+import struct
 import subprocess
 import sys
 import tempfile
@@ -67,6 +68,7 @@ EXTRA_TYPES = {".js": "text/javascript", ".mjs": "text/javascript", ".css": "tex
                ".webmanifest": "application/manifest+json", ".csv": "text/csv",
                ".xml": "application/xml"}
 MAX_FETCH = 500 * 1024 * 1024
+MAX_FOLDER = 60            # files taken from one folder by import-path
 HISTORY_EVERY = 10 * 60      # seconds between automatic snapshots
 HISTORY_KEEP = 60
 
@@ -335,6 +337,40 @@ class Library:
         except Exception as e:  # noqa: BLE001 - report any network failure to the UI
             raise ApiError(HTTPStatus.BAD_GATEWAY, f"couldn't download that link ({e})")
 
+    def import_path(self, pid: str, raw: str) -> dict:
+        """Copy an image/clip, or every image and clip in a folder, from this
+        computer into the project. Used by the Claude connector, which can't
+        read Documents/Downloads itself but can name a file."""
+        path = local_path(raw)
+        try:
+            if path.is_dir():
+                files = sorted((f for f in path.iterdir() if not f.name.startswith(".")
+                                and f.suffix.lower() in IMAGE_EXTS | VIDEO_EXTS and f.is_file()),
+                               key=lambda f: f.name.lower())
+                if not files:
+                    raise ApiError(HTTPStatus.NOT_FOUND, f"no images or clips in {path}")
+            elif path.is_file():
+                files = [path]
+            else:
+                raise ApiError(HTTPStatus.NOT_FOUND, f"there's no file or folder at {path}")
+            items = []
+            for f in files[:MAX_FOLDER]:
+                with open(f, "rb") as fh:
+                    ref = self.store_media(pid, fh, f.stat().st_size, f.name)
+                items.append({**ref, **self.media_info(pid, ref["src"])})
+        except PermissionError:
+            raise ApiError(HTTPStatus.FORBIDDEN,
+                           f"macOS didn't let Storyboard open {path}. In System Settings › Privacy & Security › "
+                           "Files and Folders, allow Terminal (or the app you start Storyboard from) to use that "
+                           "folder, then try again") from None
+        return {"items": items, "more": max(0, len(files) - MAX_FOLDER)}
+
+    def media_info(self, pid: str, src: str) -> dict:
+        try:
+            return media_info(self.inside(pid, src))
+        except ApiError:
+            return {}
+
     # -- ai-footage takes ----------------------------------------------------
 
     def list_takes(self) -> dict:
@@ -445,6 +481,169 @@ class Library:
                 if f.is_file() and rel.parts[0] not in (".history", "exports"):
                     z.write(f, Path(pid) / rel)
         return path
+
+
+def local_path(raw: str) -> Path:
+    """A path as people paste it: quoted, ~/…, file://…, or with Terminal's
+    backslash-escaped spaces."""
+    s = (raw or "").strip().strip("'\"")
+    if s.lower().startswith("file://"):
+        s = unquote(urlparse(s).path)
+    if "\\" in s and not os.path.exists(s):
+        s = re.sub(r"\\(.)", r"\1", s)
+    path = Path(os.path.expanduser(s))
+    if not s or not path.is_absolute():
+        raise ApiError(HTTPStatus.BAD_REQUEST, f"“{raw}” isn't a full path; it should start with / or ~/")
+    return path
+
+
+def media_info(path: Path) -> dict:
+    """Pixel size, and length for clips, from the file itself; {} if unknown."""
+    ext = path.suffix.lower()
+    info = {}
+    try:
+        with open(path, "rb") as f:
+            if ext in (".mp4", ".mov", ".m4v"):
+                info = mp4_info(f)
+            elif ext in IMAGE_EXTS:
+                info = image_size(f)
+    except (OSError, ValueError, IndexError, struct.error):
+        info = {}
+    if "w" not in info and ext in VIDEO_EXTS and shutil.which("ffprobe"):
+        try:
+            r = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries",
+                                "stream=width,height:format=duration", "-of", "json", str(path)],
+                               capture_output=True, timeout=20)
+            d = json.loads(r.stdout or b"{}")
+            st = (d.get("streams") or [{}])[0]
+            if st.get("width") and st.get("height"):
+                info = {"w": int(st["width"]), "h": int(st["height"])}
+            if (d.get("format") or {}).get("duration"):
+                info["duration"] = round(float(d["format"]["duration"]), 3)
+        except (OSError, ValueError, subprocess.SubprocessError):
+            pass
+    if "w" not in info and ext in IMAGE_EXTS and sys.platform == "darwin" and shutil.which("sips"):
+        try:
+            r = subprocess.run(["sips", "-g", "pixelWidth", "-g", "pixelHeight", str(path)],
+                               capture_output=True, text=True, timeout=20)
+            w = re.search(r"pixelWidth: (\d+)", r.stdout)
+            h = re.search(r"pixelHeight: (\d+)", r.stdout)
+            if w and h:
+                info = {"w": int(w.group(1)), "h": int(h.group(1))}
+        except (OSError, subprocess.SubprocessError):
+            pass
+    return info
+
+
+def image_size(f) -> dict:
+    head = f.read(32)
+    if head[:8] == b"\x89PNG\r\n\x1a\n":
+        w, h = struct.unpack(">II", head[16:24])
+    elif head[:6] in (b"GIF87a", b"GIF89a"):
+        w, h = struct.unpack("<HH", head[6:10])
+    elif head[:4] == b"RIFF" and head[8:12] == b"WEBP":
+        chunk = head[12:16]
+        if chunk == b"VP8 ":
+            w, h = (struct.unpack("<H", head[26:28])[0] & 0x3FFF, struct.unpack("<H", head[28:30])[0] & 0x3FFF)
+        elif chunk == b"VP8L":
+            bits = struct.unpack("<I", head[21:25])[0]
+            w, h = (bits & 0x3FFF) + 1, ((bits >> 14) & 0x3FFF) + 1
+        elif chunk == b"VP8X":
+            w, h = 1 + int.from_bytes(head[24:27], "little"), 1 + int.from_bytes(head[27:30], "little")
+        else:
+            return {}
+    elif head[:2] == b"BM":
+        w, h = struct.unpack("<ii", head[18:26])
+    elif head[:2] == b"\xff\xd8":
+        return jpeg_size(f)
+    else:
+        return {}
+    return {"w": abs(w), "h": abs(h)} if w and h else {}
+
+
+def jpeg_size(f) -> dict:
+    """Walk the JPEG markers to the frame header, honouring EXIF rotation the
+    way browsers do."""
+    f.seek(2)
+    turned = False
+    while True:
+        b = f.read(1)
+        while b and b != b"\xff":
+            b = f.read(1)
+        while b == b"\xff":
+            b = f.read(1)
+        if not b:
+            return {}
+        marker = b[0]
+        if marker == 0x01 or 0xD0 <= marker <= 0xD8:
+            continue
+        length = struct.unpack(">H", f.read(2))[0]
+        if 0xC0 <= marker <= 0xCF and marker not in (0xC4, 0xC8, 0xCC):
+            h, w = struct.unpack(">xHH", f.read(5))
+            return ({"w": h, "h": w} if turned else {"w": w, "h": h}) if w and h else {}
+        if marker == 0xE1:
+            data = f.read(length - 2)
+            turned = turned or exif_orientation(data) in (5, 6, 7, 8)
+        else:
+            f.seek(length - 2, 1)
+
+
+def exif_orientation(data: bytes) -> int:
+    if data[:6] != b"Exif\0\0":
+        return 1
+    t = data[6:]
+    e = "<" if t[:2] == b"II" else ">"
+    off = struct.unpack(e + "I", t[4:8])[0]
+    for i in range(struct.unpack(e + "H", t[off:off + 2])[0]):
+        entry = t[off + 2 + 12 * i: off + 14 + 12 * i]
+        if struct.unpack(e + "H", entry[:2])[0] == 0x0112:
+            return struct.unpack(e + "H", entry[8:10])[0]
+    return 1
+
+
+def mp4_info(f) -> dict:
+    """Size of the first video track and the movie length, from an MP4/MOV."""
+    size = os.fstat(f.fileno()).st_size
+
+    def atoms(start, end):
+        pos = start
+        while pos + 8 <= end:
+            f.seek(pos)
+            n, kind = struct.unpack(">I4s", f.read(8))
+            head = 8
+            if n == 1:
+                n, head = struct.unpack(">Q", f.read(8))[0], 16
+            elif n == 0:
+                n = end - pos
+            if n < head:
+                return
+            yield kind, pos + head, pos + n
+            pos += n
+
+    info = {}
+    for kind, start, end in atoms(0, size):
+        if kind != b"moov":
+            continue
+        for kind2, s2, e2 in atoms(start, end):
+            if kind2 == b"mvhd":
+                f.seek(s2)
+                v1 = f.read(4)[0] == 1
+                f.seek(16 if v1 else 8, 1)
+                scale, dur = struct.unpack(">IQ" if v1 else ">II", f.read(12 if v1 else 8))
+                if scale:
+                    info["duration"] = round(dur / scale, 3)
+            elif kind2 == b"trak" and "w" not in info:
+                for kind3, s3, _ in atoms(s2, e2):
+                    if kind3 == b"tkhd":
+                        f.seek(s3)
+                        v1 = f.read(4)[0] == 1
+                        f.seek((32 if v1 else 20) + 16, 1)
+                        matrix = struct.unpack(">9i", f.read(36))
+                        w, h = (round(x / 65536) for x in struct.unpack(">II", f.read(8)))
+                        if w and h:  # audio tracks are 0×0
+                            info["w"], info["h"] = (h, w) if matrix[0] == 0 and matrix[1] != 0 else (w, h)
+        break
+    return info
 
 
 def link_media(d: Path, src: str, name: str) -> Path:
@@ -813,7 +1012,11 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json(lib.store_media(pid, self.rfile, length, name,
                                                   self.headers.get("Content-Type", "")))
         if route == ("POST", "projects", "*", "fetch"):
-            return self.send_json(lib.fetch_url(pid, self.body_json().get("url", "")))
+            body = self.body_json()
+            ref = lib.fetch_url(pid, body.get("url", ""))
+            return self.send_json({**ref, **lib.media_info(pid, ref["src"])} if body.get("info") else ref)
+        if route == ("POST", "projects", "*", "import-path"):
+            return self.send_json(lib.import_path(pid, self.body_json().get("path", "")))
         if route == ("POST", "projects", "*", "reveal"):
             rel = self.body_json().get("path") or "."
             reveal(lib.inside(pid, rel))

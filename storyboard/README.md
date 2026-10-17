@@ -171,12 +171,33 @@ Developer › storyboard** and click **Open Logs Folder**. The last lines of
 - "Rewrite all the prompts in scene 2 to match the project look."
 - "Look at the frames in scene 1. Anything breaking continuity?"
 - "Put five lighting ideas for the bar scene on the moodboard."
+- "Add the images in ~/Downloads/renders to SC01_SH020 as variations of v1."
+- "Here's the Higgsfield render for your v1.2: /Users/me/Downloads/bar-wide.png"
+- "Make a shot for each clip in ~/Downloads/scene3 at the end of scene 3."
+- "Put these in the Locations section of the moodboard: https://…, https://…"
 
 Claude can read the board, shots, version trees, notes and images, and see
 what you have selected. It can add and edit shots and scenes, add versions,
 change version statuses (including picking one), answer and resolve notes,
-add moodboard notes and set the project look. It can't generate images
-itself, and it only deletes something when you ask it to.
+add moodboard notes and set the project look. It only deletes something when
+you ask it to.
+
+**Adding photos and clips.** Claude can add images and clips from web links
+or from files and folders on your Mac. It can put them in a shot's version
+tree (as references, as variations of a version, or as the image for a
+version it wrote), make one new shot per image, or place them on a moodboard,
+inside a section if you name one. To give Claude a file, select it in Finder
+and press **⌥⌘C** (Option-Command-C) to copy its path, then paste that into
+the chat. A folder path adds every image and clip in it, up to 60. Claude
+can't forward an image you attach to the chat, so send the path or a link
+instead.
+
+Claude can't generate images on its own. If you connect a generation tool to
+Claude that returns a link to its result, Claude can add that result too.
+
+If Claude says macOS didn't let Storyboard open a folder, open **System
+Settings › Privacy & Security › Files and Folders** and allow Terminal (or the
+app you start Storyboard from) to use that folder.
 
 ## Exports
 

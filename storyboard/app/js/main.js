@@ -190,6 +190,7 @@ async function openClaude() {
     'Pitch three alternative openings and add them as new shots in scene 1.',
     'Rewrite the prompts in scene 2 so they all match the project look.',
     'Look at the frames in scene 1. Anything breaking continuity?',
+    'Add the images in ~/Downloads/renders to the selected shot as variations of v1.',
   ];
   modal({
     title: 'Connect Claude', wide: true,
