@@ -686,9 +686,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--port", type=int, default=int(os.environ.get("STORYBOARD_PORT", 8765)))
-    ap.add_argument("--data", type=Path,
-                    default=Path(os.environ.get("STORYBOARD_DATA",
-                                                Path.home() / "Documents" / "Storyboards")),
+    ap.add_argument("--data", type=Path, default=os.environ.get("STORYBOARD_DATA"),
                     help="folder that holds your projects (default: ~/Documents/Storyboards)")
     ap.add_argument("--takes", type=Path, default=DEFAULT_TAKES,
                     help="folder scanned for generated takes named SHOT_v001.mp4 "
@@ -703,7 +701,19 @@ def main():
             webbrowser.open(url)
         return
 
-    Handler.lib = Library(a.data.expanduser().resolve(), a.takes.expanduser().resolve())
+    takes = a.takes.expanduser().resolve()
+    data = Path(a.data or Path.home() / "Documents" / "Storyboards").expanduser().resolve()
+    try:
+        Handler.lib = Library(data, takes)
+    except PermissionError:
+        # macOS asks before letting Terminal into Documents; if that was
+        # refused, keep working from the home folder instead of crashing.
+        if a.data:
+            sys.exit(f"No permission to use {data}. Pick another folder with --data.")
+        fallback = Path.home() / "Storyboards"
+        print(f"No permission to use {data} (macOS privacy settings).\n"
+              f"Using {fallback} instead.")
+        Handler.lib = Library(fallback, takes)
     try:
         httpd = ThreadingHTTPServer(("127.0.0.1", a.port), Handler)
     except OSError as e:

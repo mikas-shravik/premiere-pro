@@ -16,27 +16,47 @@ matching shot. The finished board goes to Premiere Pro as a sequence.
 
 ## Start it
 
-You only need Python 3 (see the main README's Mac setup). There's nothing else to install.
+You only need Python 3, and macOS offers to install it the first time if it's
+missing. There's nothing else to install.
 
-**Option A: a real app in your Dock.** In Terminal, run this once:
+Recent macOS versions (Sequoia and later) block double-clicking scripts that
+came from the internet, such as a downloaded zip. Right-click › Open no longer
+gets around that. The Terminal method below always works because it never
+double-clicks anything.
 
-```bash
-cd premiere-pro/storyboard
-./make-mac-app.sh
-```
+**The sure way: Terminal.**
 
-This creates `~/Applications/Storyboard.app`. Open it and drag it to the Dock.
-Opening it starts Storyboard in the background and opens it in your browser.
-To stop it, click **Quit Storyboard** at the bottom of the home screen. If you
-move the `premiere-pro` folder, run `./make-mac-app.sh` again.
+1. Open Terminal: press ⌘ Space, type `Terminal` and press Return.
+2. Type `python3` and a space, but don't press Return yet.
+3. Drag `server.py` from the `storyboard` folder onto the Terminal window. Its
+   location appears after `python3 `.
+4. Press Return. Storyboard opens in your browser.
 
-**Option B: double-click `Storyboard.command`** in Finder. A Terminal window
-opens. Keep it open while you work, and close it to stop Storyboard. If macOS
-says the file can't be opened, right-click it and choose **Open** the first time.
+Keep that window open while you work, and close it to stop Storyboard. Next
+time, open Terminal, press ↑ to bring the command back, and press Return.
 
-**Option C: Terminal.** Run `python3 storyboard/server.py`. It accepts these flags:
-`--port 9000`, `--data ~/Dropbox/Storyboards` (another projects folder) and
-`--no-browser`.
+- If a box asks to install **command line developer tools**, click Install,
+  wait for it to finish, then repeat steps 2–4. That installs Python.
+- If macOS asks whether Terminal may access your **Documents** folder, click
+  Allow. If you refuse, projects are saved in `~/Storyboards` instead.
+
+**Make double-clicking `Storyboard.command` work (optional, once).** Double-click
+it so macOS blocks it, and click Done. Then open **System Settings › Privacy &
+Security**, scroll down to Security, click **Open Anyway** next to the
+Storyboard.command message and enter your password. Double-click it again and
+choose **Open**. From then on it opens normally. To unblock the whole folder
+in one go instead, type `xattr -dr com.apple.quarantine ` in Terminal (with a
+space at the end), drag the folder onto the window and press Return.
+
+**A real app in your Dock (optional).** In Terminal, type `bash ` (with a
+space), drag `make-mac-app.sh` onto the window and press Return. This creates
+`~/Applications/Storyboard.app`. macOS doesn't block it because it was made on
+your Mac. Open it and drag it to the Dock. Opening it starts Storyboard in the
+background and opens it in your browser. To stop it, click **Quit Storyboard**
+at the bottom of the home screen. If you move the folder, build the app again.
+
+`server.py` accepts these flags: `--port 9000`, `--data ~/Dropbox/Storyboards`
+(another projects folder) and `--no-browser`.
 
 Storyboard runs at **http://127.0.0.1:8765**. Chrome, Safari and Arc all work.
 In Chrome you can also choose **⋮ › Cast, save and share › Install page as app**

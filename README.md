@@ -26,7 +26,7 @@ Storyboard ──► shots.csv ──► gen_clip.py batch ──► incoming/ �
      └──────────────────────► Premiere animatic XML (stills, clips, markers, music)
 ```
 
-Start it with `./storyboard/make-mac-app.sh` (this builds a Storyboard.app for your Dock) or by double-clicking `storyboard/Storyboard.command`.
+To start it, open Terminal, type `python3 `, drag `storyboard/server.py` onto the window and press Return. [`storyboard/README.md`](storyboard/README.md#start-it) covers double-click and Dock-app options, and what to do if macOS blocks them.
 
 ## One-time setup (Mac)
 

@@ -3,8 +3,8 @@
 # local Storyboard server in the background, if it isn't running yet, and
 # opens Storyboard in your default browser. Keep it in the Dock.
 #
-#   ./make-mac-app.sh                      # ~/Applications/Storyboard.app
-#   ./make-mac-app.sh /Applications/Storyboard.app
+#   bash make-mac-app.sh                      # ~/Applications/Storyboard.app
+#   bash make-mac-app.sh /Applications/Storyboard.app
 #
 # Re-run it if you move this folder. Quit from Storyboard's home screen.
 set -euo pipefail
@@ -46,6 +46,8 @@ for s in 16 32 128 256 512; do
   sips -z $((s * 2)) $((s * 2)) "$HERE/app/icon-1024.png" --out "$ICONSET/icon_${s}x${s}@2x.png" >/dev/null
 done
 iconutil -c icns "$ICONSET" -o "$APP/Contents/Resources/applet.icns"
+# Re-sign (ad hoc) so the new icon doesn't leave a broken signature.
+codesign --force --deep --sign - "$APP" >/dev/null 2>&1 || true
 touch "$APP"
 
 echo "Created $APP"
