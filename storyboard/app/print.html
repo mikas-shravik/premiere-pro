@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Print storyboard</title>
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<style>
+  :root { --ar: 16 / 9; --ink: #16161a; --soft: #5d5d66; --line: #d9d9de; --accent: #c77d00; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: #e9e9ec; color: var(--ink); font: 10pt/1.4 -apple-system, BlinkMacSystemFont, "Helvetica Neue", Arial, sans-serif; }
+  .bar { position: sticky; top: 0; z-index: 2; display: flex; gap: 10px; align-items: center; padding: 10px 16px; background: #18181b; color: #ececf0; font-size: 13px; }
+  .bar button, .bar select { font: inherit; height: 30px; padding: 0 12px; border-radius: 6px; border: 1px solid #3a3a42; background: #29292e; color: inherit; }
+  .bar button.primary { background: #ffb224; border-color: #ffb224; color: #1d1404; font-weight: 600; }
+  .bar .grow { flex: 1; }
+  .pages { display: grid; gap: 18px; justify-content: center; padding: 18px; }
+  .page { background: #fff; width: var(--pw); height: var(--ph); padding: 11mm 12mm 10mm; display: flex; flex-direction: column; box-shadow: 0 4px 18px rgba(0,0,0,.15); overflow: hidden; }
+  .page-head { display: flex; align-items: baseline; gap: 12px; padding-bottom: 6px; margin-bottom: 7mm; border-bottom: 1.5px solid var(--ink); }
+  .page-head h1 { margin: 0; font-size: 14pt; letter-spacing: -0.01em; }
+  .page-head .meta { color: var(--soft); font-size: 9pt; }
+  .page-head .num { margin-left: auto; color: var(--soft); font-size: 9pt; font-variant-numeric: tabular-nums; }
+  .grid { flex: 1; display: grid; gap: 7mm 6mm; grid-template-columns: repeat(var(--cols), 1fr); grid-template-rows: repeat(var(--rows), auto); align-content: start; }
+  .cell { min-width: 0; break-inside: avoid; }
+  .scene-tag { font-size: 8pt; font-weight: 600; color: var(--accent); text-transform: uppercase; letter-spacing: .05em; min-height: 1.4em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .frame { position: relative; aspect-ratio: var(--ar); background: #f1f1f3; border: 1px solid var(--line); overflow: hidden; }
+  .frame img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .frame .empty { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: #b4b4bb; font-size: 9pt; }
+  .head-row { display: flex; justify-content: space-between; gap: 8px; margin: 4px 0 2px; font-weight: 700; font-size: 9.5pt; font-variant-numeric: tabular-nums; }
+  .head-row span:last-child { font-weight: 500; color: var(--soft); }
+  .f { margin: 2px 0 0; font-size: 9pt; overflow-wrap: anywhere; }
+  .f.camera { color: var(--soft); font-size: 8.5pt; }
+  .f.dialogue { font-style: italic; }
+  .f.prompt { color: var(--soft); font-size: 8pt; }
+  .f.notes { color: var(--soft); font-size: 8.5pt; }
+  .f b { font-weight: 600; color: var(--soft); font-style: normal; font-size: 7.5pt; text-transform: uppercase; letter-spacing: .04em; margin-right: 4px; }
+  .lines { border-top: 1px dashed var(--line); margin-top: 4px; }
+  .list .cell { display: grid; grid-template-columns: 48% 1fr; gap: 6mm; align-items: start; padding-bottom: 6mm; border-bottom: 1px solid var(--line); }
+  .list .cell .f { font-size: 10pt; }
+  .thumbs .f { display: none; }
+  .loading { padding: 60px; text-align: center; color: #666; }
+  @media print {
+    html, body { background: #fff; }
+    .bar { display: none; }
+    .pages { padding: 0; gap: 0; display: block; }
+    .page { box-shadow: none; width: auto; height: var(--ph-print); break-after: page; }
+    .page:last-child { break-after: auto; }
+  }
+</style>
+<style id="page-size"></style>
+</head>
+<body>
+<div class="bar">
+  <b id="title">Storyboard</b><span class="grow"></span>
+  <label>Paper <select id="paper"><option value="A4">A4</option><option value="Letter">US Letter</option></select></label>
+  <button class="primary" id="print">Print / Save as PDF</button>
+</div>
+<div class="pages" id="pages"><div class="loading">Preparing pages…</div></div>
+<script type="module" src="js/print.js"></script>
+</body>
+</html>

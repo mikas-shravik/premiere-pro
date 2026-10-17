@@ -14,6 +14,20 @@ The XML import gives you:
 - **An "AI Clips" bin** with every take. The prompt is in the *Description* column, the shot name in *Scene*, and the model and seed in *Log Note*, so you can always regenerate a shot.
 - **An "AI Assembly" sequence** with the newest take of each shot, in shot order. It's a rough cut ready to trim.
 
+## Storyboard app
+
+[`storyboard/`](storyboard/README.md) is a storyboard, moodboard and animatic
+app that runs on your Mac and is saved there. Plan shots on cards, collect
+references on an infinite moodboard, and time everything in an animatic with
+temp music. It also feeds this toolkit:
+
+```
+Storyboard ──► shots.csv ──► gen_clip.py batch ──► incoming/ ──► takes appear on each shot
+     └──────────────────────► Premiere animatic XML (stills, clips, markers, music)
+```
+
+Start it with `./storyboard/make-mac-app.sh` (this builds a Storyboard.app for your Dock) or by double-clicking `storyboard/Storyboard.command`.
+
 ## One-time setup (Mac)
 
 In Terminal:
