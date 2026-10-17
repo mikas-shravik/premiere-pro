@@ -12,9 +12,10 @@ import {
 import * as storyboard from './storyboard.js';
 import * as moodboard from './moodboard.js';
 import * as animatic from './animatic.js';
+import * as versions from './versions.js';
 
-const VIEWS = { board: storyboard, mood: moodboard, animatic };
-const VIEW_TABS = [['board', 'Storyboard', 'board', '1'], ['mood', 'Moodboard', 'mood', '2'], ['animatic', 'Animatic', 'film', '3']];
+const VIEWS = { board: storyboard, mood: moodboard, versions, animatic };
+const VIEW_TABS = [['board', 'Storyboard', 'board', '1'], ['mood', 'Moodboard', 'mood', '2'], ['versions', 'Versions', 'tree', '3'], ['animatic', 'Animatic', 'film', '4']];
 const root = $('#app');
 
 const app = {
@@ -28,6 +29,7 @@ const app = {
     app.selection = new Set(ids);
     app.current = current;
     app.view?.onSelect?.();
+    app.store?.setPresence({ view: app.viewName, shot: current, version: null, selection: [...app.selection] });
   },
 };
 
@@ -59,7 +61,6 @@ async function openProject(id) {
   app.store = store;
   app.selection = new Set();
   app.current = null;
-  store.on('conflict', onConflict);
   document.title = `${store.p.name} · Storyboard`;
   renderShell();
 }
@@ -72,6 +73,7 @@ function closeProject(discard = false) {
   if (discard) app.store.dirty = false;
   app.store.saveSoon.cancel();
   app.store.flush();
+  app.store.close();
   app.store = null;
   document.title = 'Storyboard';
 }
@@ -93,6 +95,24 @@ function showView(name) {
   root.querySelectorAll('.seg [data-view]').forEach((b) => b.classList.toggle('on', b.dataset.view === name));
   app.view = VIEWS[name].mount(host, { store: app.store, app, opts: app.pendingOpts });
   app.pendingOpts = null;
+  if (name !== 'versions') app.store.setPresence({ view: name, version: null, shot: app.current });
+}
+
+// Changes saved by Claude or another window: say what happened, offer undo,
+// and briefly highlight what changed.
+function announceRemote({ actor, summary, touched = [] }) {
+  const who = { claude: 'Claude', history: 'Version history' }[actor] || 'Another window';
+  toast(`${who}: ${summary || 'updated the board'}`, { action: 'Undo', onAction: () => app.store?.undo(), timeout: 6000 });
+  requestAnimationFrame(() => {
+    for (const id of touched) {
+      for (const el of document.querySelectorAll(`[data-shot="${id}"],[data-node="${id}"],[data-scene="${id}"],[data-id="${id}"]`)) {
+        el.classList.remove('flash');
+        void el.offsetWidth;
+        el.classList.add('flash');
+        setTimeout(() => el.classList.remove('flash'), 2700);
+      }
+    }
+  });
 }
 
 // --- top bar --------------------------------------------------------------------
@@ -114,9 +134,10 @@ function renderShell() {
   const redoBtn = iconBtn('redo', `Redo (${modKey}⇧Z)`, () => store.redo());
   const syncUndo = () => { undoBtn.disabled = !store.past.length; redoBtn.disabled = !store.future.length; };
   syncUndo();
-  store.on('change', ({ source }) => {
+  store.on('change', (ev) => {
     syncUndo();
-    if (source === 'undo' || source === 'redo') name.value = store.p.name;
+    if ((ev.source === 'undo' || ev.source === 'redo' || ev.source === 'remote') && document.activeElement !== name) name.value = store.p.name;
+    if (ev.source === 'remote') announceRemote(ev);
   });
   store.on('status', ({ status, message }) => {
     saveState.className = `save-state ${status}`;
@@ -144,19 +165,50 @@ function renderShell() {
           { label: 'Project settings…', icon: 'settings', onClick: openSettings },
           { label: 'Version history…', icon: 'history', onClick: openHistory },
           { label: 'Show project folder', icon: 'folder', onClick: () => api.reveal(store.id, '.') },
+          { label: 'Connect Claude…', icon: 'sparkle', onClick: openClaude },
           '-',
           { label: 'Keyboard shortcuts', icon: 'help', kbd: '?', onClick: openHelp },
         ])))),
     h('main.view'));
 }
 
-function onConflict() {
+// --- Claude desktop app ----------------------------------------------------------
+
+async function openClaude() {
+  let status;
+  try { status = await api.claudeStatus(); } catch (e) { return toast(e.message, { type: 'error' }); }
+  const statusLine = h('p.muted');
+  const showStatus = (st) => {
+    statusLine.replaceChildren(st.installed
+      ? h('span', null, h('b', { style: { color: 'var(--ok)' } }, 'Connected. '), 'If Claude was open while you connected, quit it completely (⌘Q) and open it again.')
+      : st.appFound ? 'Not connected yet.' : h('span', null, 'The Claude desktop app wasn’t found. Install it from ', h('a', { href: 'https://claude.ai/download', target: '_blank', rel: 'noopener' }, 'claude.ai/download'), ' and sign in with your Pro account, then come back here.'));
+  };
+  showStatus(status);
+  const examples = [
+    'What’s on my storyboard so far? Summarize it scene by scene.',
+    'Look at my notes on the shot I have selected and write the next variation.',
+    'Pitch three alternative openings and add them as new shots in scene 1.',
+    'Rewrite the prompts in scene 2 so they all match the project look.',
+    'Look at the frames in scene 1. Anything breaking continuity?',
+  ];
   modal({
-    title: 'Project changed in another window',
-    body: h('p.muted', null, 'This project was saved from another browser tab or window. Reload to get that version, or keep this one and overwrite it.'),
+    title: 'Connect Claude', wide: true,
+    body: h('div', { style: { display: 'grid', gap: '16px' } },
+      h('p', null, 'Lets Claude in the Claude desktop app read this storyboard, your versions and mark-up notes, and make changes. Changes appear here live, and you can undo them. It runs on your Claude plan, with no extra cost.'),
+      h('ol.claude-steps', null,
+        h('li', null, h('div', null, h('b', null, 'Click Connect below. '), 'Storyboard adds itself to the Claude app’s connectors.')),
+        h('li', null, h('div', null, h('b', null, 'Quit Claude completely (⌘Q) and open it again. '), 'If macOS asks whether Claude may access a folder, click Allow.')),
+        h('li', null, h('div', null, h('b', null, 'Keep Storyboard running while you chat. '), 'Claude works on the project you have open here.'))),
+      statusLine,
+      h('div', null, h('h4.muted', { style: { margin: '0 0 8px', fontSize: '11px', textTransform: 'uppercase', letterSpacing: '.06em' } }, 'Then try asking Claude'),
+        h('div.try-list', null, examples.map((t) => h('div', null, `“${t}”`))))),
     actions: [
-      { label: 'Keep mine', onClick: () => { app.store.forceSave(); } },
-      { label: 'Reload', primary: true, onClick: () => { reopen(); } },
+      { label: 'Close', value: false },
+      { label: status.installed ? 'Reconnect' : 'Connect', primary: true, onClick: () => {
+        api.claudeInstall().then((st) => { showStatus(st); toast('Storyboard was added to Claude. Restart Claude to use it.'); })
+          .catch((e) => toast(e.message, { type: 'error', timeout: 8000 }));
+        return false;
+      } },
     ],
   });
 }
@@ -238,12 +290,17 @@ export function openHelp() {
     title: 'Keyboard shortcuts', wide: true,
     body: h('div.cols-2', { style: { gap: '24px' } },
       h('div', null, h('h4.muted', null, 'Everywhere'), h('div.shortcuts', null,
-        k('1 2 3', 'Storyboard · Moodboard · Animatic'), k(`${modKey}Z`, 'Undo'), k(`${modKey}⇧Z`, 'Redo'), k(`${modKey}S`, 'Save now'), k('?', 'This list')),
+        k('1 2 3 4', 'Storyboard · Moodboard · Versions · Animatic'), k(`${modKey}Z`, 'Undo'), k(`${modKey}⇧Z`, 'Redo'), k(`${modKey}S`, 'Save now'), k('?', 'This list')),
       h('h4.muted', { style: { marginTop: '18px' } }, 'Storyboard'), h('div.shortcuts', null,
         k('N', 'New shot after selection'), k('⇧N', 'New scene'), k('← →', 'Previous / next shot'), k('Space', 'Quick look'),
         k(`${modKey}D`, 'Duplicate shot'), k('⌫', 'Delete shot'), k(`${modKey}V`, 'Paste image into selected shot'), k('Enter', 'Edit action text'),
         k(`${modKey}C`, 'Copy shot’s full prompt'))),
-      h('div', null, h('h4.muted', null, 'Moodboard'), h('div.shortcuts', null,
+      h('div', null, h('h4.muted', null, 'Versions'), h('div.shortcuts', null,
+        k('Drop', 'On a shot: references · on a version: variations'), k('Dbl-click', 'Mark up for Claude'), k('P', 'Pick as final'),
+        k('↑ ↓ ← →', 'Move around the tree'), k('⌫', 'Delete version'), k('F', 'Fit')),
+      h('h4.muted', { style: { marginTop: '18px' } }, 'Mark-up'), h('div.shortcuts', null,
+        k('O R A P', 'Circle · box · arrow · draw'), k('V', 'Move marks'), k('⌫', 'Delete mark'), k('Esc', 'Done')),
+      h('h4.muted', { style: { marginTop: '18px' } }, 'Moodboard'), h('div.shortcuts', null,
         k('V', 'Select tool'), k('H', 'Hand / pan (or hold Space)'), k('N', 'Sticky note'), k('T', 'Text'), k('S', 'Section'), k('C', 'Color swatch'),
         k('Scroll', 'Pan'), k(`${modKey} Scroll`, 'Zoom (or pinch)'), k('⇧1', 'Zoom to fit'), k('Dbl-click', 'New note / edit'), k(`${modKey}D`, 'Duplicate'), k('⌫', 'Delete')),
       h('h4.muted', { style: { marginTop: '18px' } }, 'Animatic'), h('div.shortcuts', null,
@@ -290,6 +347,7 @@ async function renderHome() {
       h('button.proj-card.proj-new', { type: 'button', onclick: newProject }, h('div.plus', null, icon('plus', 20)), h('span', null, 'New project')),
       cards),
     h('div.data-path', null, icon('folder', 14), h('span', null, `Projects are saved in ${data.data}`),
+      btn('Connect Claude…', openClaude, { icon: 'sparkle', cls: 'small ghost' }),
       btn('Quit Storyboard', quitServer, { cls: 'small ghost', title: 'Stop the local Storyboard server' })))));
 }
 

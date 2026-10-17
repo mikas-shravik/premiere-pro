@@ -127,6 +127,12 @@ const ICONS = {
   captions: 'M3 5h18v14H3zM7 12h3M7 15h6M14 15h3M13 12h4',
   camera: 'M3 7h4l2-3h6l2 3h4v12H3zM12 17a4 4 0 1 0 0-8 4 4 0 0 0 0 8z',
   minus: 'M5 12h14',
+  circle: 'M12 20a8 8 0 1 0 0-16 8 8 0 0 0 0 16z',
+  square: 'M4.5 6.5h15v11h-15z',
+  pen: 'M4 20l4.5-1L19 8.5 15.5 5 5 15.5zM13.5 7l3.5 3.5',
+  tree: 'M12 3v5M12 8H6v4M12 8h6v4M6 12v3M18 12v3M4 15h4v5H4zM16 15h4v5h-4zM10 3h4v4h-4z',
+  marker: 'M12 21s-6-5.4-6-10a6 6 0 1 1 12 0c0 4.6-6 10-6 10zM12 13a2 2 0 1 0 0-4 2 2 0 0 0 0 4z',
+  sparkle: 'M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8zM19 16l.8 2.2L22 19l-2.2.8L19 22l-.8-2.2L16 19l2.2-.8z',
   volume: 'M4 9h4l5-4v14l-5-4H4zM17 9a4 4 0 0 1 0 6M19.5 6.5a8 8 0 0 1 0 11',
   fit: 'M4 9V4h5M15 4h5v5M20 15v5h-5M9 20H4v-5M9 9h6v6H9z',
 };

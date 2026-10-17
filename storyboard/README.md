@@ -8,7 +8,11 @@ folder in `~/Documents/Storyboards`.
 |---|---|
 | **Storyboard** | Scenes made of shot cards. Each shot has a frame (still or clip), action, dialogue, size, angle, move, lens, length, transition, an AI prompt, references and notes. |
 | **Moodboard** | An infinite canvas for reference stills, clips, sticky notes, headings, color swatches, links and arrows between ideas. A project can have several boards. |
+| **Versions** | Every shot's evolution tree on one board: first references, the variations made from each, which one was picked, and the mark-up notes on each. Scenes run left to right like a timeline. |
 | **Animatic** | Plays the board at each shot's length, with simulated camera moves on stills, dissolves and fades, dialogue captions and a temp music track. Drag a clip's edge in the timeline to retime it. |
+
+Claude, in the Claude desktop app, can read and edit your boards. Its changes
+appear live while you work (see [Working with Claude](#working-with-claude)).
 
 It ties into the rest of this repo. A board exports a `shots.csv` that
 `ai-footage/gen_clip.py batch` reads. The takes that generates show up on the
@@ -98,6 +102,73 @@ browser tab.
 7. **Hand off.** Use **Export › Premiere Pro animatic (XML)**, then in
    Premiere use *File › Import*.
 
+## Versions: the evolution tree
+
+The Versions tab (press **3**) keeps the whole history of every shot: where it
+started, what you tried, and how you got to the final frame. Scenes run left
+to right in story order. Each shot grows a tree downward.
+
+```
+SC01 · SH020                        ← the shot (shows its current frame)
+ ├─ v1 Option        ├─ v2 Rework   ← first references
+ │                    ├─ v2.1 Exploring
+ │                    └─ v2.2 Picked ← the final frame; its path is green
+```
+
+- **Start a tree:** any frame you give a shot on the Storyboard tab is added automatically. You can also drop images onto a shot here. Tick **Show empty shots** to see shots that don't have versions yet.
+- **Add variations:** drop the new generations onto the version they came from. You can also select a version and click **Add images as variations…**.
+- **Status:** Exploring (not judged yet), Rework (close, needs changes), Option (a backup you might use later) or Picked. **Pick as final** (or press **P**) makes that version the shot's frame.
+- **Clean up:** delete versions you know you won't use. Deleting one also deletes what grew from it. Undo works, and the image files stay in the project folder.
+- **Empty versions** hold a prompt you haven't generated yet, either yours or Claude's. Drop the generated image onto one to fill it.
+- Every version keeps its prompt, a note, its date and who made it.
+
+## Mark-up: circle what should change
+
+Double-click a version (or click **Review & mark up**) to open it full screen.
+Pick **Circle (O)**, **Box (R)**, **Arrow (A)** or **Draw (P)** and mark the
+part of the image you want changed. Each mark gets a number and a note, for
+example "Replace this table with a rustic oak one". Notes show as sticky notes
+on the image, and you can tick each one **Resolved**. You can also mark up a
+shot's frame straight from the Storyboard inspector.
+
+When you close the review, Storyboard saves a copy of the image with your
+numbered marks drawn on it. That copy is what Claude looks at.
+
+## Working with Claude
+
+Claude in the **Claude desktop app** can read and edit your boards. Its edits
+appear live in Storyboard within a second or two: no reloading, and your
+scroll position, selection and the field you're typing in stay where they
+are. Each Claude edit shows a note with **Undo**, and the changed cards flash
+briefly. If you're both editing at once, both sets of changes are kept. If you
+both change the same field, yours wins. It runs on your Claude plan, with no
+extra cost.
+
+**Set up once:**
+
+1. Install the [Claude desktop app](https://claude.ai/download) and sign in.
+2. In Storyboard, open **⋯ › Connect Claude…** (or the button on the home screen) and click **Connect**.
+3. Quit Claude completely (⌘Q) and open it again. If macOS asks whether Claude may access a folder, click **Allow**.
+
+Keep Storyboard running while you chat. Claude works on the project you have
+open, and it knows which shot or version you've selected. If you move the
+Storyboard folder, click Connect again.
+
+**Things to ask:**
+
+- "What's on my storyboard so far?"
+- "Look at my notes on the version I have selected and write the next variation." Claude reads your notes, looks at the marked-up image, adds a new version under it with a complete prompt, and replies to each note. Generate that prompt in Higgsfield, then drop the result onto Claude's version.
+- "Pitch three alternative openings and add them as shots after SC01_SH010."
+- "Rewrite all the prompts in scene 2 to match the project look."
+- "Look at the frames in scene 1. Anything breaking continuity?"
+- "Put five lighting ideas for the bar scene on the moodboard."
+
+Claude can read the board, shots, version trees, notes and images, and see
+what you have selected. It can add and edit shots and scenes, add versions,
+change version statuses (including picking one), answer and resolve notes,
+add moodboard notes and set the project look. It can't generate images
+itself, and it only deletes something when you ask it to.
+
 ## Exports
 
 | Export | Result |
@@ -130,9 +201,11 @@ Press **?** in the app for the full list.
 
 | | |
 |---|---|
-| **1 / 2 / 3** | Storyboard / Moodboard / Animatic |
+| **1 / 2 / 3 / 4** | Storyboard / Moodboard / Versions / Animatic |
 | **⌘Z / ⇧⌘Z** | Undo / redo, everywhere |
 | **Storyboard** | **N** new shot · **⇧N** new scene · **← →** move selection · **Space** quick look · **⌘C** copy prompt · **⌘V** paste image into the shot · **⌘D** duplicate · **⌫** delete |
+| **Versions** | **↑ ↓ ← →** move around the tree · **P** pick as final · **Enter** or double-click to mark up · **⌫** delete · **F** fit |
+| **Mark-up** | **O** circle · **R** box · **A** arrow · **P** draw · **V** move marks · **⌫** delete mark · **Esc** done |
 | **Moodboard** | **V** select · **H** or hold Space to pan · **N** note · **T** text · **S** section · **C** swatch · scroll to pan · ⌘-scroll or pinch to zoom · **⇧1** zoom to fit |
 | **Animatic** | **Space** play/pause · **J K L** back 1 s / pause / play · **← →** step one frame · **↑ ↓** previous/next shot · **F** full screen |
 
@@ -151,8 +224,8 @@ Press **?** in the app for the full list.
 - Storyboard saves as you work. The dot next to Undo shows the save state.
 - Click **⋯ › Version history** to restore an older snapshot. Restoring also
   snapshots the current state first.
-- If the same project is open in two windows, Storyboard warns you instead of
-  silently overwriting one with the other.
+- If the same project is open in two windows, or Claude edits while you work,
+  the changes are merged live rather than one overwriting the other.
 - Media files are stored once even if you add the same image twice.
 
 ## Notes

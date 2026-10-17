@@ -4,13 +4,20 @@
 //   id, name, rev, settings: { aspect, fps, width, height, duration, look, negative, takes, music },
 //   scenes: [{ id, number, title, synopsis, collapsed, shots: [shot] }],
 //   boards: [{ id, name, items: [item], links: [{ id, from, to }], view: { x, y, z } }],
+//   versions: [version],
 // }
 // shot  = { id, number, frame: {src, kind, w, h, duration} | null, action, dialogue,
 //           size, angle, move, lens, duration, transition, prompt, negative, seed,
 //           takes, model, status, notes, refs: [{src, kind}] }
 // item  = { id, type: image|video|note|text|swatch|section|link, x, y, w, h, ...type fields }
+// version = { id, shot, parent, label: '1.2', media | null, prompt, note,
+//             status: new|rework|option|picked, by: you|claude, created,
+//             marks: [mark], markedSrc }   one node of a shot's evolution tree
+// mark  = { id, n, shape: ellipse|rect|arrow|pen, x, y, w, h, pts, t, note, done, reply }
+//         (coordinates are 0-1 fractions of the image)
 
 import { api } from './api.js';
+import { deepEqual, merge3 } from './merge.js';
 import { debounce, pad, uid } from './ui.js';
 
 export const VERSION = 1;
@@ -30,8 +37,72 @@ export function normalize(p) {
   p.settings = { aspect: '16:9', fps: '24', width: 1920, height: 1080, duration: 3, look: '', negative: '', takes: 1, music: null, ...(p.settings || {}) };
   p.scenes = (p.scenes || []).map((sc) => ({ ...newScene(), ...sc, shots: (sc.shots || []).map((s) => ({ ...newShot(p.settings), ...s, refs: s.refs || [] })) }));
   p.boards = (p.boards?.length ? p.boards : [newBoard()]).map((b) => ({ ...newBoard(), ...b, items: b.items || [], links: b.links || [], view: { x: 0, y: 0, z: 1, ...(b.view || {}) } }));
+  p.versions = (p.versions || []).map((v) => ({
+    parent: null, label: '1', media: null, prompt: '', note: '', status: 'new', by: 'you', created: 0, markedSrc: null, ...v, marks: v.marks || [],
+  }));
   return p;
 }
+
+// --- version trees (call inside store.update) ---------------------------------
+
+export const versionsOf = (p, shotId) => p.versions.filter((v) => v.shot === shotId);
+export const childrenOf = (p, id) => p.versions.filter((v) => v.parent === id).sort((a, b) => a.created - b.created);
+
+// Labels are stable: 1, 2, 3 for first references, 1.1, 1.2 for variations of 1.
+function nextLabel(p, shotId, parentId) {
+  const parent = parentId && p.versions.find((v) => v.id === parentId);
+  const siblings = p.versions.filter((v) => v.shot === shotId && (v.parent || null) === (parentId || null));
+  const n = siblings.reduce((m, v) => Math.max(m, Number(String(v.label).split('.').pop()) || 0), 0) + 1;
+  return parent ? `${parent.label}.${n}` : String(n);
+}
+
+export function addVersion(p, shotId, parentId = null, over = {}) {
+  const v = {
+    id: uid('v_'), shot: shotId, parent: parentId || null, label: nextLabel(p, shotId, parentId), media: null,
+    prompt: '', note: '', status: 'new', by: 'you', created: Date.now(), marks: [], markedSrc: null, ...over,
+  };
+  p.versions.push(v);
+  return v;
+}
+
+export function deleteVersion(p, id) {
+  const gone = new Set([id]);
+  let grew = true;
+  while (grew) {
+    grew = false;
+    for (const v of p.versions) if (v.parent && gone.has(v.parent) && !gone.has(v.id)) { gone.add(v.id); grew = true; }
+  }
+  p.versions = p.versions.filter((v) => !gone.has(v.id));
+  return gone.size;
+}
+
+export const subtreeSize = (p, id) => 1 + childrenOf(p, id).reduce((n, c) => n + subtreeSize(p, c.id), 0);
+
+// Picking a version makes it the shot's frame; a previous pick becomes an option.
+export function pickVersion(p, id) {
+  const v = p.versions.find((x) => x.id === id);
+  if (!v) return;
+  for (const o of versionsOf(p, v.shot)) if (o.status === 'picked' && o !== v) o.status = 'option';
+  v.status = 'picked';
+  if (v.media) {
+    for (const sc of p.scenes) {
+      const shot = sc.shots.find((s) => s.id === v.shot);
+      if (shot) shot.frame = { ...v.media };
+    }
+  }
+}
+
+// Every frame a shot gets is remembered in its tree, so the history builds
+// itself while you work on the storyboard.
+export function trackFrame(p, shot, extra = {}) {
+  if (!shot?.frame?.src) return null;
+  let v = versionsOf(p, shot.id).find((x) => x.media?.src === shot.frame.src);
+  if (!v) v = addVersion(p, shot.id, null, { prompt: shot.prompt || '', ...extra, media: { ...shot.frame } });
+  pickVersion(p, v.id);
+  return v;
+}
+
+export const openMarks = (v) => (v?.marks || []).filter((m) => !m.done);
 
 export const shotCode = (scene, shot) => `SC${pad(scene.number, 2)}_SH${pad(shot.number, 3)}`;
 
@@ -96,6 +167,65 @@ export class Store extends EventTarget {
     this.dirty = false;
     this.status = 'saved';
     this.saveSoon = debounce(() => this.save(), 600);
+    this.clientId = uid('c_');
+    // Existing frames join their shot's version tree the first time a project opens.
+    const before = this.p.versions.length;
+    for (const sc of this.p.scenes) for (const s of sc.shots) if (s.frame && !versionsOf(this.p, s.id).some((v) => v.media?.src === s.frame.src)) trackFrame(this.p, s);
+    this.base = clone(this.p);
+    if (this.p.versions.length !== before) { this.base.versions = []; this.dirty = true; this.saveSoon(); }
+    this.listen();
+  }
+
+  // Live updates: the server announces every save. Saves from Claude or
+  // another window are merged into this one without a reload.
+  listen() {
+    if (typeof EventSource === 'undefined') return;
+    this.events = new EventSource(`/api/projects/${encodeURIComponent(this.id)}/events`);
+    this.events.onmessage = (e) => {
+      let ev;
+      try { ev = JSON.parse(e.data); } catch { return; }
+      if (ev.client !== this.clientId && ev.rev > this.rev) this.pull(ev);
+    };
+  }
+
+  close() {
+    this.events?.close();
+    this.events = null;
+    clearTimeout(this.presenceTimer);
+  }
+
+  async pull(ev = {}) {
+    if (this.saving || this.pulling) { this.pendingPull = ev; return; }
+    this.pulling = true;
+    try {
+      const theirs = await api.get(this.id);
+      delete theirs.path;
+      if (theirs.rev <= this.rev) return;
+      const incoming = normalize(theirs);
+      const merged = merge3(this.base, clone(this.p), incoming);
+      this.past.push(JSON.stringify(this.p));
+      if (this.past.length > 300) this.past.shift();
+      this.future = [];
+      this.lastKey = null;
+      this.p = normalize(merged);
+      this.base = clone(incoming);
+      this.rev = theirs.rev;
+      this.dirty = !sameDoc(this.p, this.base);
+      if (this.dirty) { this.setStatus('pending'); this.saveSoon(); } else this.setStatus('saved');
+      this.emit('change', { source: 'remote', actor: ev.actor, summary: ev.summary, touched: ev.touched || [] });
+    } catch (e) {
+      this.setStatus('error', e.message);
+    } finally {
+      this.pulling = false;
+      if (this.pendingPull) { const next = this.pendingPull; this.pendingPull = null; this.pull(next); }
+    }
+  }
+
+  // What the person is looking at, so Claude can act on "this shot".
+  setPresence(info) {
+    this.presence = { ...this.presence, ...info };
+    clearTimeout(this.presenceTimer);
+    this.presenceTimer = setTimeout(() => api.presence(this.id, this.presence).catch(() => {}), 250);
   }
 
   on(type, fn) {
@@ -147,44 +277,37 @@ export class Store extends EventTarget {
 
   async save() {
     if (this.saving) { this.again = true; return; }
-    if (!this.dirty || this.status === 'conflict') return;
+    if (!this.dirty || this.pulling) return;
     clearTimeout(this.retry);
     this.saving = true;
     this.dirty = false;
     this.setStatus('saving');
+    const sent = JSON.stringify(this.p);
     try {
-      const r = await api.save(this.id, this.p, this.rev);
+      const r = await api.save(this.id, this.p, this.rev, { client: this.clientId });
       this.rev = r.rev;
+      this.base = JSON.parse(sent);
       this.setStatus(this.dirty ? 'pending' : 'saved');
     } catch (e) {
       this.dirty = true;
       if (e.status === 409) {
-        this.setStatus('conflict');
-        this.emit('conflict');
+        // Saved elsewhere since we last synced: merge theirs in, then save again.
+        this.pendingPull ??= {};
       } else {
         this.setStatus('error', e.message);
         this.retry = setTimeout(() => this.save(), 4000);
       }
     } finally {
       this.saving = false;
-      if (this.again) { this.again = false; this.save(); }
+      if (this.pendingPull) { const next = this.pendingPull; this.pendingPull = null; this.pull(next); } else if (this.again) { this.again = false; this.save(); }
     }
-  }
-
-  // Overwrite whatever is on disk with this window's version.
-  async forceSave() {
-    const disk = await api.get(this.id);
-    this.rev = disk.rev;
-    this.status = 'pending';
-    this.dirty = true;
-    return this.save();
   }
 
   // Called on page hide: send unsaved work even if the tab is closing.
   flush() {
-    if (!this.dirty || this.status === 'conflict') return;
+    if (!this.dirty) return;
     this.saveSoon.cancel();
-    api.save(this.id, this.p, this.rev, true);
+    api.save(this.id, this.p, this.rev, { keepalive: true, client: this.clientId });
     this.dirty = false;
   }
 
@@ -212,9 +335,14 @@ export class Store extends EventTarget {
   }
 
   scene(id) { return this.p.scenes.find((s) => s.id === id); }
+  version(id) { return this.p.versions.find((v) => v.id === id); }
   board(id) { return this.p.boards.find((b) => b.id === id) || this.p.boards[0]; }
   totalSeconds() { return this.p.scenes.reduce((t, sc) => t + sc.shots.reduce((u, s) => u + (Number(s.duration) || 0), 0), 0); }
 }
+
+const clone = (o) => JSON.parse(JSON.stringify(o));
+// Equal apart from the bookkeeping fields every save touches.
+const sameDoc = (a, b) => deepEqual({ ...a, rev: 0, updated: 0 }, { ...b, rev: 0, updated: 0 });
 
 // --- shot numbering (call inside store.update) --------------------------------
 // Shots keep their number when others move, like a real shot list: inserts

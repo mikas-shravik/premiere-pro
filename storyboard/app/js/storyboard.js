@@ -3,7 +3,8 @@
 
 import { api, mediaUrl, probe } from './api.js';
 import { addAll, emptyFrame, lightbox, mediaEl, pickFromBoards } from './shared.js';
-import { fixOrder, insertShot, newScene, nextSceneNumber, numberForInsert, renumberScene, shotCode } from './store.js';
+import { fixOrder, insertShot, newScene, nextSceneNumber, numberForInsert, openMarks, renumberScene, shotCode, trackFrame, versionsOf } from './store.js';
+import { openReview } from './review.js';
 import { ANGLES, aspectRatio, buildPrompt, cameraLine, fullPrompt, LENSES, MOVES, SIZES, STATUSES, statusOf, TRANSITIONS } from './vocab.js';
 import {
   autosize, btn, clamp, confirmDialog, copyText, droppedMedia, field, fmtDuration, h, icon, iconBtn, isTyping,
@@ -306,7 +307,9 @@ export function mount(host, { store, app }) {
     }
     const st = statusOf(shot.status);
     const t = takes[shotCode(scene, shot)]?.length || 0;
-    const sig = JSON.stringify([shotCode(scene, shot), shot.duration, st.id, shot.transition, shot.size, shot.angle, shot.move, shot.lens, shot.action, shot.dialogue, shot.frame?.kind, t, sel().has(shot.id)]);
+    const vs = versionsOf(store.p, shot.id);
+    const notes = vs.reduce((n, v) => n + openMarks(v).length, 0);
+    const sig = JSON.stringify([shotCode(scene, shot), shot.duration, st.id, shot.transition, shot.size, shot.angle, shot.move, shot.lens, shot.action, shot.dialogue, shot.frame?.kind, t, vs.length, notes, sel().has(shot.id)]);
     if (c.sig === sig) return;
     c.sig = sig;
     c.code.textContent = shotCode(scene, shot).replace('_', ' · ');
@@ -320,6 +323,8 @@ export function mount(host, { store, app }) {
       ...[shot.size, shot.angle && shot.angle !== 'Eye level' ? shot.angle : '', shot.move && shot.move !== 'Static' ? shot.move : ''].filter(Boolean).map((x) => h('span.chip', null, x)),
       shot.lens && h('span.chip.lens', null, shot.lens),
       t && !shot.frame && h('span.chip', { style: { color: '#b07cff' } }, `${t} take${t > 1 ? 's' : ''}`),
+      vs.length > 1 && h('span.chip', { title: 'Versions in this shot’s tree' }, `${vs.length} versions`),
+      notes && h('span.chip.notes', { title: 'Open mark-up notes' }, `${notes} note${notes > 1 ? 's' : ''}`),
     ].filter(Boolean));
     c.chips.classList.toggle('hidden', !c.chips.children.length);
     c.action.textContent = shot.action || 'No description yet';
@@ -437,8 +442,13 @@ export function mount(host, { store, app }) {
       const f = store.find(shotId);
       if (!f) return [];
       f.shot.frame = toFrame(refs[0]);
+      trackFrame(p, f.shot);
       if (refs[0].kind === 'video' && ['idea', 'prompt'].includes(f.shot.status)) f.shot.status = 'generated';
-      return refs.slice(1).map((r, i) => insertShot(p, f.scene, f.hi + 1 + i, { frame: toFrame(r), status: r.kind === 'video' ? 'generated' : 'idea' }));
+      return refs.slice(1).map((r, i) => {
+        const s = insertShot(p, f.scene, f.hi + 1 + i, { frame: toFrame(r), status: r.kind === 'video' ? 'generated' : 'idea' });
+        trackFrame(p, s);
+        return s;
+      });
     });
     if (created.length) toast(`Added ${created.length} more shot${created.length > 1 ? 's' : ''} after ${store.find(shotId)?.code}`);
     app.select([shotId]);
@@ -449,7 +459,11 @@ export function mount(host, { store, app }) {
     if (!refs.length) return;
     const shots = store.update((p) => {
       const scene = store.scene(sceneId);
-      return refs.map((r, i) => insertShot(p, scene, Math.min(index + i, scene.shots.length), { frame: toFrame(r), status: r.kind === 'video' ? 'generated' : 'idea' }));
+      return refs.map((r, i) => {
+        const s = insertShot(p, scene, Math.min(index + i, scene.shots.length), { frame: toFrame(r), status: r.kind === 'video' ? 'generated' : 'idea' });
+        trackFrame(p, s);
+        return s;
+      });
     });
     app.select(shots.map((s) => s.id), shots[0].id);
   }
@@ -586,14 +600,34 @@ export function mount(host, { store, app }) {
 
   // --- inspector ------------------------------------------------------------------------
 
-  function renderInspector() {
+  // What the inspector shows; if a live change leaves it the same, skip redrawing.
+  const inspectorSig = () => {
+    const f = single();
+    if (!f || sel().size > 1) return null;
+    return JSON.stringify([f.code, f.shot, versionsOf(store.p, f.shot.id), store.settings.look, store.settings.fps]);
+  };
+
+  function renderInspector({ remote = false } = {}) {
+    const sig = inspectorSig();
+    if (remote && sig && sig === insp.dataset.sig) return;
     const scrollTop = insp.scrollTop;
     const keep = insp.dataset.shot;
+    // Keep the field being typed in focused, with its cursor, across a redraw.
+    const active = insp.contains(document.activeElement) ? document.activeElement : null;
+    const focus = active?.dataset.field && { field: active.dataset.field, start: active.selectionStart, end: active.selectionEnd };
     if (sel().size > 1) insp.replaceChildren(...multiInspector());
     else if (single()) insp.replaceChildren(...shotInspector(single()));
     else insp.replaceChildren(overview());
     insp.dataset.shot = single()?.shot.id || '';
-    if (keep && keep === insp.dataset.shot) insp.scrollTop = scrollTop;
+    insp.dataset.sig = sig || '';
+    if (keep && keep === insp.dataset.shot) {
+      insp.scrollTop = scrollTop;
+      const el = focus && insp.querySelector(`[data-field="${focus.field}"]`);
+      if (el) {
+        el.focus({ preventScroll: true });
+        try { el.setSelectionRange(focus.start, focus.end); } catch { /* number inputs */ }
+      }
+    }
   }
 
   function shotInspector(f) {
@@ -646,7 +680,7 @@ export function mount(host, { store, app }) {
 
     const frameActions = h('div.frame-actions', null,
       btn(shot.frame ? 'Replace' : 'Browse…', async () => setFrameFrom(id, await pickFiles({ multiple: false })), { icon: 'upload', cls: 'small ghost' }),
-      btn('From moodboard', async () => { const [r] = await pickFromBoards(store, { multiple: false, title: 'Use as frame' }); if (r) store.update(() => { get().frame = toFrame(r); }); }, { icon: 'mood', cls: 'small ghost' }),
+      btn('From moodboard', async () => { const [r] = await pickFromBoards(store, { multiple: false, title: 'Use as frame' }); if (r) store.update((p) => { get().frame = toFrame(r); trackFrame(p, get()); }); }, { icon: 'mood', cls: 'small ghost' }),
       shot.frame && btn('Finder', () => api.reveal(pid, shot.frame.src), { icon: 'folder', cls: 'small ghost', title: 'Show file in Finder (drag it into Higgsfield or Premiere from there)' }),
       shot.frame && iconBtn('trash', 'Remove frame', () => store.update(() => { get().frame = null; }), 'small'));
 
@@ -666,11 +700,11 @@ export function mount(host, { store, app }) {
     const copyBtn = btn('Copy', async () => { await copyText(fullPrompt(get(), store.settings)); toast('Prompt copied — paste it into Higgsfield'); }, { icon: 'copy', cls: 'small', title: `Copy the full prompt, with the project look (${modKey}C)` });
 
     const durIn = h('input.input.mono', {
-      type: 'number', min: 0.1, step: 0.5, value: shot.duration,
+      type: 'number', min: 0.1, step: 0.5, value: shot.duration, dataset: { field: 'duration' },
       oninput: (e) => { const v = parseFloat(e.target.value); if (v > 0) { set('duration', Math.round(v * 100) / 100); frames.textContent = `${Math.round(v * Number(store.settings.fps))} fr`; } },
     });
     const frames = h('small.faint.mono', null, `${Math.round((Number(shot.duration) || 0) * Number(store.settings.fps))} fr @ ${store.settings.fps}`);
-    const lensIn = h('input.input', { value: shot.lens || '', list: 'sb-lenses', placeholder: '35mm', oninput: (e) => set('lens', e.target.value) });
+    const lensIn = h('input.input', { value: shot.lens || '', list: 'sb-lenses', placeholder: '35mm', dataset: { field: 'lens' }, oninput: (e) => set('lens', e.target.value) });
 
     // refs
     const refsBox = h('div.refs');
@@ -709,7 +743,14 @@ export function mount(host, { store, app }) {
             const r = await api.importTake(pid, t.name).catch((err) => toast(err.message, { type: 'error' }));
             if (!r) return;
             const meta = await probe(mediaUrl(pid, r.src), r.kind);
-            store.update(() => { const s = get(); s.frame = toFrame({ ...r, ...meta }); if (['idea', 'prompt'].includes(s.status)) s.status = 'generated'; if (t.seed !== '' && !s.seed) s.seed = String(t.seed); if (t.model && !s.model) s.model = t.model; });
+            store.update((p) => {
+              const s = get();
+              s.frame = toFrame({ ...r, ...meta });
+              trackFrame(p, s, { prompt: t.prompt || s.prompt || '', note: `Take v${String(t.version).padStart(3, '0')}${t.model ? ` · ${t.model}` : ''}${t.seed !== '' ? ` · seed ${t.seed}` : ''}` });
+              if (['idea', 'prompt'].includes(s.status)) s.status = 'generated';
+              if (t.seed !== '' && !s.seed) s.seed = String(t.seed);
+              if (t.model && !s.model) s.model = t.model;
+            });
           } },
           { label: 'Preview', icon: 'eye', onClick: () => window.open(t.url, '_blank') },
         ]),
@@ -731,13 +772,30 @@ export function mount(host, { store, app }) {
         promptIn, preview,
         field('Negative prompt', text('negative', { placeholder: store.settings.negative || 'Optional', rows: 1 })),
         h('div.cols-3', null,
-          field('Seed', h('input.input.mono', { value: shot.seed || '', placeholder: 'random', oninput: (e) => set('seed', e.target.value.replace(/[^\d]/g, '')) })),
-          field('Takes', h('input.input.mono', { type: 'number', min: 1, max: 20, value: shot.takes || '', placeholder: String(store.settings.takes || 1), oninput: (e) => set('takes', e.target.value) })),
-          field('Made with', h('input.input', { value: shot.model || '', placeholder: 'Higgsfield…', list: 'sb-models', oninput: (e) => set('model', e.target.value) })))),
+          field('Seed', h('input.input.mono', { value: shot.seed || '', placeholder: 'random', dataset: { field: 'seed' }, oninput: (e) => set('seed', e.target.value.replace(/[^\d]/g, '')) })),
+          field('Takes', h('input.input.mono', { type: 'number', min: 1, max: 20, value: shot.takes || '', placeholder: String(store.settings.takes || 1), dataset: { field: 'takes' }, oninput: (e) => set('takes', e.target.value) })),
+          field('Made with', h('input.input', { value: shot.model || '', placeholder: 'Higgsfield…', list: 'sb-models', dataset: { field: 'model' }, oninput: (e) => set('model', e.target.value) })))),
+      versionsBox(f),
       h('div.insp-section', null, h('div.sec-head', null, h('h4', null, 'References'), h('small.faint', null, 'Character, style, start frame…')), refsBox),
       takesBox,
       h('div.insp-section', null, field('Notes', text('notes', { placeholder: 'Anything else: VFX, sound, props, edit ideas…', rows: 2 }))),
     ];
+  }
+
+  // The shot's evolution tree in brief, with a way into it and into mark-up.
+  function versionsBox(f) {
+    const vs = versionsOf(store.p, f.shot.id);
+    const notes = vs.reduce((n, v) => n + openMarks(v).length, 0);
+    const markUp = () => {
+      const v = store.update((p) => trackFrame(p, store.find(f.shot.id).shot), { source: 'inspector' });
+      if (v) openReview(store, v.id);
+    };
+    return h('div.insp-section', null,
+      h('div.sec-head', null, h('h4', null, 'Versions'),
+        h('small.faint', null, vs.length ? `${vs.length} version${vs.length > 1 ? 's' : ''}${notes ? ` · ${notes} open note${notes > 1 ? 's' : ''}` : ''}` : 'none yet')),
+      h('div.row', { style: { gap: '6px', flexWrap: 'wrap' } },
+        btn('Open tree', () => app.go('versions', { shot: f.shot.id }), { icon: 'tree', cls: 'small' }),
+        f.shot.frame?.kind === 'image' && btn('Mark up frame', markUp, { icon: 'marker', cls: 'small', title: 'Circle what should change and leave notes for Claude' })));
   }
 
   function multiInspector() {
@@ -827,8 +885,12 @@ export function mount(host, { store, app }) {
   const offChange = store.on('change', ({ source }) => {
     renderSide();
     renderMain();
-    if (source !== 'inspector') renderInspector();
-    else if (single()) insp.querySelector('.insp-code').textContent = single().code;
+    if (source === 'remote') renderInspector({ remote: true });
+    else if (source !== 'inspector') renderInspector();
+    else if (single()) {
+      insp.querySelector('.insp-code').textContent = single().code;
+      insp.dataset.sig = inspectorSig() || '';
+    }
   });
 
   // shared list for the lens + model inputs

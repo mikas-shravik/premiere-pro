@@ -71,6 +71,15 @@ export const STATUSES = [
 ];
 export const statusOf = (id) => STATUSES.find((s) => s.id === id) || STATUSES[0];
 
+// Status of one version in a shot's evolution tree.
+export const VSTATUS = [
+  { id: 'new', label: 'Exploring', color: '#8d8d96', hint: 'Not judged yet' },
+  { id: 'rework', label: 'Rework', color: '#f3b13e', hint: 'Close, needs changes in the next variation' },
+  { id: 'option', label: 'Option', color: '#5b9cff', hint: 'A backup I might use later' },
+  { id: 'picked', label: 'Picked', color: '#35c27e', hint: 'The final choice, used as the shot’s frame' },
+];
+export const vstatusOf = (id) => VSTATUS.find((s) => s.id === id) || VSTATUS[0];
+
 export const ASPECTS = [
   ['16:9', '16:9 · HD / YouTube', 1920, 1080],
   ['2.39:1', '2.39:1 · Scope', 1920, 804],

@@ -18,8 +18,10 @@ The XML import gives you:
 
 [`storyboard/`](storyboard/README.md) is a storyboard, moodboard and animatic
 app that runs on your Mac and is saved there. Plan shots on cards, collect
-references on an infinite moodboard, and time everything in an animatic with
-temp music. It also feeds this toolkit:
+references on an infinite moodboard, track every shot's variations in a
+version tree, and circle what should change for Claude. Claude, in the Claude
+desktop app, can read and edit the board live. You can time everything in an
+animatic with temp music. It also feeds this toolkit:
 
 ```
 Storyboard ──► shots.csv ──► gen_clip.py batch ──► incoming/ ──► takes appear on each shot

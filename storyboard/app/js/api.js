@@ -25,9 +25,12 @@ export const api = {
   projects: () => call('GET', '/api/projects'),
   create: (name, project) => call('POST', '/api/projects', { name, project }),
   get: (id) => call('GET', `/api/projects/${id}`),
-  save: (id, data, rev, keepalive = false) => keepalive
-    ? fetch(`/api/projects/${id}/save`, { method: 'POST', keepalive: true, headers: { ...H, 'Content-Type': 'application/json', 'X-Base-Rev': String(rev) }, body: JSON.stringify(data) })
-    : call('PUT', `/api/projects/${id}`, data, { 'X-Base-Rev': String(rev) }),
+  save: (id, data, rev, { keepalive = false, client = '' } = {}) => keepalive
+    ? fetch(`/api/projects/${id}/save`, { method: 'POST', keepalive: true, headers: { ...H, 'Content-Type': 'application/json', 'X-Base-Rev': String(rev), 'X-Client': client }, body: JSON.stringify(data) })
+    : call('PUT', `/api/projects/${id}`, data, { 'X-Base-Rev': String(rev), 'X-Client': client }),
+  presence: (id, info) => call('POST', `/api/projects/${id}/presence`, info),
+  claudeStatus: () => call('GET', '/api/claude/status'),
+  claudeInstall: () => call('POST', '/api/claude/install', {}),
   remove: (id) => call('DELETE', `/api/projects/${id}`),
   duplicate: (id) => call('POST', `/api/projects/${id}/duplicate`, {}),
   history: (id) => call('GET', `/api/projects/${id}/history`),

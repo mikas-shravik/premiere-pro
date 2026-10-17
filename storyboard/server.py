@@ -21,6 +21,7 @@ import hashlib
 import json
 import mimetypes
 import os
+import queue
 import re
 import secrets
 import shlex
@@ -43,6 +44,7 @@ from urllib.parse import parse_qs, quote, unquote, urlparse
 from xml.sax.saxutils import escape
 
 HERE = Path(__file__).resolve().parent
+CONNECTOR = HERE / "claude_connector.py"
 APP_DIR = HERE / "app"
 AI_FOOTAGE = HERE.parent / "ai-footage"
 DEFAULT_TAKES = AI_FOOTAGE / "incoming"
@@ -113,7 +115,30 @@ class Library:
         self.root = root
         self.takes = takes
         self.lock = threading.Lock()
+        self.subscribers = {}  # project id -> set of queues, one per open window
+        self.presence = {}     # project id -> what the person has selected
         root.mkdir(parents=True, exist_ok=True)
+
+    # -- live updates --------------------------------------------------------
+
+    def subscribe(self, pid: str) -> "queue.Queue":
+        q = queue.Queue()
+        with self.lock:
+            self.subscribers.setdefault(pid, set()).add(q)
+        return q
+
+    def unsubscribe(self, pid: str, q) -> None:
+        with self.lock:
+            self.subscribers.get(pid, set()).discard(q)
+
+    def broadcast(self, pid: str, event: dict) -> None:
+        for q in list(self.subscribers.get(pid, ())):
+            q.put(event)
+
+    def close_streams(self) -> None:
+        for qs in list(self.subscribers.values()):
+            for q in list(qs):
+                q.put(None)
 
     def dir(self, pid: str) -> Path:
         if not ID_RE.match(pid or ""):
@@ -175,7 +200,9 @@ class Library:
             self.write(d, project)
         return project
 
-    def save(self, pid: str, data: dict, base_rev) -> int:
+    def save(self, pid: str, data: dict, base_rev, meta=None) -> int:
+        """meta: who saved (client id, actor, summary, touched ids), passed
+        on to every open window so they can merge the change live."""
         with self.lock:
             d = self.dir(pid)
             current = self.read(pid)
@@ -185,7 +212,8 @@ class Library:
             self.snapshot(d)
             data.update({"id": pid, "rev": rev + 1, "updated": now_ms()})
             self.write(d, data)
-            return rev + 1
+        self.broadcast(pid, {"rev": rev + 1, **(meta or {})})
+        return rev + 1
 
     def snapshot(self, d: Path, force=False) -> None:
         hist = d / ".history"
@@ -221,7 +249,9 @@ class Library:
             data = json.loads(src.read_text(encoding="utf-8"))
             data.update({"id": pid, "rev": int(current.get("rev", 0)) + 1, "updated": now_ms()})
             self.write(d, data)
-            return data
+        self.broadcast(pid, {"rev": data["rev"], "actor": "history",
+                             "summary": "restored an earlier version"})
+        return data
 
     def duplicate(self, pid: str) -> dict:
         src = self.dir(pid)
@@ -366,6 +396,44 @@ class Library:
         path.write_text(xml, encoding="utf-8")
         return path
 
+    def preview(self, pid: str, src: str, size: int = 1024) -> Path:
+        """A small JPEG/PNG of an image or clip, for showing Claude without
+        sending a 20 MB file. Uses macOS's sips/qlmanage, else ffmpeg."""
+        path = self.inside(pid, src)
+        if not path.is_file():
+            raise ApiError(HTTPStatus.NOT_FOUND, "no such media file")
+        size = max(128, min(int(size or 1024), 2048))
+        cache = self.dir(pid) / ".cache"
+        cache.mkdir(exist_ok=True)
+        is_video = path.suffix.lower() in VIDEO_EXTS
+        for out in (cache / f"{path.stem}-{size}.jpg", cache / f"{path.stem}-{size}.png"):
+            if out.exists() and out.stat().st_mtime >= path.stat().st_mtime:
+                return out
+        out = cache / f"{path.stem}-{size}.jpg"
+        quiet = {"stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL, "timeout": 60}
+        try:
+            if sys.platform == "darwin" and not is_video and shutil.which("sips"):
+                subprocess.run(["sips", "-s", "format", "jpeg", "-s", "formatOptions", "82",
+                                "-Z", str(size), str(path), "--out", str(out)], **quiet)
+            elif sys.platform == "darwin" and is_video and shutil.which("qlmanage"):
+                subprocess.run(["qlmanage", "-t", "-s", str(size), "-o", str(cache), str(path)], **quiet)
+                made = cache / f"{path.name}.png"
+                if made.exists():
+                    os.replace(made, cache / f"{path.stem}-{size}.png")
+                    return cache / f"{path.stem}-{size}.png"
+            if not out.exists() and shutil.which("ffmpeg"):
+                subprocess.run(["ffmpeg", "-y", "-loglevel", "error", *(["-ss", "0.3"] if is_video else []),
+                                "-i", str(path), "-frames:v", "1", "-vf",
+                                f"scale={size}:{size}:force_original_aspect_ratio=decrease",
+                                "-q:v", "4", str(out)], **quiet)
+        except (OSError, subprocess.SubprocessError):
+            pass
+        if out.exists():
+            return out
+        if not is_video and path.stat().st_size < 4 * 1024 * 1024:
+            return path
+        raise ApiError(HTTPStatus.UNSUPPORTED_MEDIA_TYPE, "couldn't make a preview of this file")
+
     def zip_project(self, pid: str) -> Path:
         d = self.dir(pid)
         out = d / "exports"
@@ -397,6 +465,59 @@ def link_media(d: Path, src: str, name: str) -> Path:
     except OSError:
         shutil.copy2(source, target)
     return target
+
+
+# --- Claude desktop app connector ------------------------------------------
+
+def claude_config_path() -> Path:
+    if sys.platform == "darwin":
+        return Path.home() / "Library" / "Application Support" / "Claude" / "claude_desktop_config.json"
+    if os.name == "nt":
+        return Path(os.environ.get("APPDATA", Path.home())) / "Claude" / "claude_desktop_config.json"
+    return Path.home() / ".config" / "Claude" / "claude_desktop_config.json"
+
+
+def claude_app_found() -> bool:
+    if sys.platform == "darwin":
+        return any(p.exists() for p in (Path("/Applications/Claude.app"),
+                                         Path.home() / "Applications" / "Claude.app"))
+    return claude_config_path().parent.exists()
+
+
+def claude_status() -> dict:
+    cfg = claude_config_path()
+    entry = None
+    if cfg.is_file():
+        try:
+            entry = json.loads(cfg.read_text(encoding="utf-8")).get("mcpServers", {}).get("storyboard")
+        except (OSError, ValueError):
+            pass
+    linked = bool(entry) and str(CONNECTOR) in (entry.get("args") or [])
+    return {"installed": linked, "appFound": claude_app_found(), "config": str(cfg),
+            "connector": str(CONNECTOR)}
+
+
+def claude_install(port: int) -> dict:
+    """Add Storyboard to the Claude desktop app's connectors (its MCP
+    servers list), keeping everything else in that file as it is."""
+    cfg = claude_config_path()
+    data = {}
+    if cfg.is_file():
+        try:
+            data = json.loads(cfg.read_text(encoding="utf-8") or "{}")
+        except ValueError:
+            raise ApiError(HTTPStatus.CONFLICT, f"Claude's settings file isn't valid JSON: {cfg}")
+        shutil.copy2(cfg, cfg.with_name(cfg.name + ".bak"))
+    data.setdefault("mcpServers", {})["storyboard"] = {
+        "command": sys.executable,
+        "args": [str(CONNECTOR)],
+        "env": {"STORYBOARD_URL": f"http://127.0.0.1:{port}"},
+    }
+    cfg.parent.mkdir(parents=True, exist_ok=True)
+    tmp = cfg.with_name(cfg.name + ".tmp")
+    tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    os.replace(tmp, cfg)
+    return claude_status()
 
 
 def build_animatic_xml(d: Path, spec: dict, timebase: int, ntsc: bool) -> str:
@@ -605,8 +726,19 @@ class Handler(BaseHTTPRequestHandler):
                                    "command": command})
         if route == ("POST", "shutdown"):
             self.send_json({"ok": True})
+            lib.close_streams()
             threading.Thread(target=self.server.shutdown, daemon=True).start()
             return None
+        if route == ("GET", "presence"):
+            # The project and shot the person is looking at right now.
+            if not lib.presence:
+                return self.send_json({})
+            pid_, info = max(lib.presence.items(), key=lambda kv: kv[1].get("ts", 0))
+            return self.send_json({"project": pid_, **info})
+        if (method, *parts) == ("GET", "claude", "status"):
+            return self.send_json(claude_status())
+        if (method, *parts) == ("POST", "claude", "install"):
+            return self.send_json(claude_install(self.server.server_address[1]))
         if route == ("GET", "projects"):
             return self.send_json({"projects": lib.list(), "data": str(lib.root)})
         if route == ("POST", "projects"):
@@ -618,7 +750,25 @@ class Handler(BaseHTTPRequestHandler):
         if route in (("PUT", "projects", "*"), ("POST", "projects", "*", "save")):
             data = self.body_json()
             data.pop("path", None)
-            return self.send_json({"rev": lib.save(pid, data, self.headers.get("X-Base-Rev"))})
+            touched = unquote(self.headers.get("X-Touched") or "")
+            meta = {"client": self.headers.get("X-Client") or "",
+                    "actor": self.headers.get("X-Actor") or "window",
+                    "summary": unquote(self.headers.get("X-Summary") or ""),
+                    "touched": [t for t in touched.split(",") if t]}
+            return self.send_json({"rev": lib.save(pid, data, self.headers.get("X-Base-Rev"), meta)})
+        if route == ("GET", "projects", "*", "events"):
+            return self.stream_events(pid)
+        if route == ("POST", "projects", "*", "presence"):
+            lib.dir(pid)
+            lib.presence[pid] = {**self.body_json(), "ts": time.time()}
+            return self.send_json({"ok": True})
+        if route == ("GET", "projects", "*", "presence"):
+            lib.dir(pid)
+            return self.send_json(lib.presence.get(pid, {}))
+        if route == ("GET", "projects", "*", "preview"):
+            src = (query.get("src") or [""])[0]
+            size = int((query.get("max") or ["1024"])[0])
+            return self.send_file(lib.preview(pid, src, size))
         if route == ("DELETE", "projects", "*"):
             lib.trash(pid)
             return self.send_json({"ok": True})
@@ -660,6 +810,30 @@ class Handler(BaseHTTPRequestHandler):
                                    "url": f"/p/{pid}/{quote(rel)}?download=1",
                                    "tools": str(tools) if tools else None})
         raise ApiError(HTTPStatus.NOT_FOUND, "unknown endpoint")
+
+    def stream_events(self, pid):
+        """Server-sent events: one message per save of this project."""
+        rev = int(self.lib.read(pid).get("rev", 0))
+        q = self.lib.subscribe(pid)
+        try:
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(f"data: {json.dumps({'hello': True, 'rev': rev})}\n\n".encode())
+            while True:
+                try:
+                    event = q.get(timeout=15)
+                except queue.Empty:
+                    self.wfile.write(b": ping\n\n")
+                    continue
+                if event is None:
+                    break
+                self.wfile.write(f"data: {json.dumps(event, ensure_ascii=False)}\n\n".encode())
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            pass
+        finally:
+            self.lib.unsubscribe(pid, q)
 
     def do_GET(self):
         self.handle_any("GET")

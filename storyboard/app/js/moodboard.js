@@ -4,7 +4,7 @@
 
 import { addMedia, api, mediaUrl } from './api.js';
 import { addAll, lightbox, mediaEl } from './shared.js';
-import { insertShot, newBoard, newScene, nextSceneNumber } from './store.js';
+import { insertShot, newBoard, newScene, nextSceneNumber, trackFrame } from './store.js';
 import { NOTE_COLORS, noteColor } from './vocab.js';
 import {
   clamp, confirmDialog, copyText, droppedMedia, h, icon, iconBtn, isTyping, menu, mod, modKey, pickFiles,
@@ -510,10 +510,14 @@ export function mount(host, { store, app }) {
     const shots = store.update((p) => {
       let scene = p.scenes.at(-1);
       if (!scene) { scene = newScene({ number: nextSceneNumber(p) }); p.scenes.push(scene); }
-      return sorted.map((it) => insertShot(p, scene, scene.shots.length, {
-        frame: { src: it.src, kind: it.type, w: it.mw, h: it.mh, duration: it.duration, name: it.name },
-        status: it.type === 'video' ? 'generated' : 'idea',
-      }));
+      return sorted.map((it) => {
+        const shot = insertShot(p, scene, scene.shots.length, {
+          frame: { src: it.src, kind: it.type, w: it.mw, h: it.mh, duration: it.duration, name: it.name },
+          status: it.type === 'video' ? 'generated' : 'idea',
+        });
+        trackFrame(p, shot);
+        return shot;
+      });
     });
     toast(`${shots.length} shot${shots.length > 1 ? 's' : ''} added to the storyboard`, { action: 'Show', onAction: () => { app.select(shots.map((s) => s.id), shots[0].id); app.go('board'); } });
   }
