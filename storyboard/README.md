@@ -106,7 +106,10 @@ browser tab.
 
 The Versions tab (press **3**) keeps the whole history of every shot: where it
 started, what you tried, and how you got to the final frame. Scenes run left
-to right in story order. Each shot grows a tree downward.
+to right in story order, with every shot in each scene. Each shot grows a tree
+downward. It opens on the first scenes at a readable size; scroll sideways for
+the rest, pick one scene from the menu, or press **F** to see the whole
+project at once.
 
 ```
 SC01 · SH020                        ← the shot (shows its current frame)
@@ -115,7 +118,7 @@ SC01 · SH020                        ← the shot (shows its current frame)
  │                    └─ v2.2 Picked ← the final frame; its path is green
 ```
 
-- **Start a tree:** any frame you give a shot on the Storyboard tab is added automatically. You can also drop images onto a shot here. Tick **Show empty shots** to see shots that don't have versions yet.
+- **Start a tree:** any frame you give a shot on the Storyboard tab is added automatically. You can also drop images onto a shot here. Tick **Only shots with versions** to hide shots that don't have any yet.
 - **Add variations:** drop the new generations onto the version they came from. You can also select a version and click **Add images as variations…**.
 - **Status:** Exploring (not judged yet), Rework (close, needs changes), Option (a backup you might use later) or Picked. **Pick as final** (or press **P**) makes that version the shot's frame.
 - **Clean up:** delete versions you know you won't use. Deleting one also deletes what grew from it. Undo works, and the image files stay in the project folder.
@@ -175,12 +178,17 @@ Developer › storyboard** and click **Open Logs Folder**. The last lines of
 - "Here's the Higgsfield render for your v1.2: /Users/me/Downloads/bar-wide.png"
 - "Make a shot for each clip in ~/Downloads/scene3 at the end of scene 3."
 - "Put these in the Locations section of the moodboard: https://…, https://…"
+- "Start a new 9:16 project called Diwali Ad from this script, one scene per beat, and open it."
+- "Rename this project to Kailash Feast – v2 and set it to 25 fps."
 
 Claude can read the board, shots, version trees, notes and images, and see
-what you have selected. It can add and edit shots and scenes, add versions,
-change version statuses (including picking one), answer and resolve notes,
-add moodboard notes and set the project look. It only deletes something when
-you ask it to.
+what you have selected. It can create projects (from a template or from your
+script), rename them, change their settings (aspect ratio, frame rate, shot
+length, look and negative prompt) and open one in your Storyboard window. It
+can add and edit shots and scenes, add versions, change version statuses
+(including picking one), answer and resolve notes and add moodboard notes. A
+new or renamed project shows up on the home screen straight away. Claude only
+deletes something when you ask it to, and it can't delete projects.
 
 **Adding photos and clips.** Claude can add images and clips from web links
 or from files and folders on your Mac. It can put them in a shot's version

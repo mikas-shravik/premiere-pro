@@ -68,6 +68,7 @@ EXTRA_TYPES = {".js": "text/javascript", ".mjs": "text/javascript", ".css": "tex
                ".webmanifest": "application/manifest+json", ".csv": "text/csv",
                ".xml": "application/xml"}
 MAX_FETCH = 500 * 1024 * 1024
+ALL = "_all"                 # event channel for the project list (never a project id)
 MAX_FOLDER = 60            # files taken from one folder by import-path
 HISTORY_EVERY = 10 * 60      # seconds between automatic snapshots
 HISTORY_KEEP = 60
@@ -133,9 +134,11 @@ class Library:
         with self.lock:
             self.subscribers.get(pid, set()).discard(q)
 
-    def broadcast(self, pid: str, event: dict) -> None:
-        for q in list(self.subscribers.get(pid, ())):
+    def broadcast(self, pid: str, event: dict) -> int:
+        qs = list(self.subscribers.get(pid, ()))
+        for q in qs:
             q.put(event)
+        return len(qs)
 
     def close_streams(self) -> None:
         for qs in list(self.subscribers.values()):
@@ -200,6 +203,7 @@ class Library:
             project.update({"id": pid, "name": name, "created": now_ms(),
                             "updated": now_ms(), "rev": 1})
             self.write(d, project)
+        self.broadcast(ALL, {"projects": "created", "id": pid})
         return project
 
     def save(self, pid: str, data: dict, base_rev, meta=None) -> int:
@@ -215,6 +219,8 @@ class Library:
             data.update({"id": pid, "rev": rev + 1, "updated": now_ms()})
             self.write(d, data)
         self.broadcast(pid, {"rev": rev + 1, **(meta or {})})
+        if data.get("name") != current.get("name"):
+            self.broadcast(ALL, {"projects": "renamed", "id": pid})
         return rev + 1
 
     def snapshot(self, d: Path, force=False) -> None:
@@ -265,6 +271,7 @@ class Library:
             data.update({"id": new, "name": name, "created": now_ms(), "updated": now_ms(),
                          "rev": 1})
             self.write(self.root / new, data)
+        self.broadcast(ALL, {"projects": "created", "id": new})
         return data
 
     def trash(self, pid: str) -> None:
@@ -272,6 +279,7 @@ class Library:
         bin_ = self.root / ".trash"
         bin_.mkdir(exist_ok=True)
         os.replace(d, bin_ / f"{pid}-{datetime.now():%Y%m%d-%H%M%S}")
+        self.broadcast(ALL, {"projects": "deleted", "id": pid})
 
     # -- media -------------------------------------------------------------
 
@@ -973,6 +981,13 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json(claude_install(self.server.server_address[1]))
         if route == ("GET", "projects"):
             return self.send_json({"projects": lib.list(), "data": str(lib.root)})
+        if route == ("GET", "events"):
+            return self.stream_events(ALL, {"hello": True})
+        if route == ("POST", "open"):
+            # Show a project in the open Storyboard window(s), for Claude.
+            pid_ = self.body_json().get("project", "")
+            lib.dir(pid_)
+            return self.send_json({"windows": lib.broadcast(ALL, {"open": pid_})})
         if route == ("POST", "projects"):
             return self.send_json(lib.create(self.body_json()), HTTPStatus.CREATED)
         if route == ("GET", "projects", "*"):
@@ -989,7 +1004,7 @@ class Handler(BaseHTTPRequestHandler):
                     "touched": [t for t in touched.split(",") if t]}
             return self.send_json({"rev": lib.save(pid, data, self.headers.get("X-Base-Rev"), meta)})
         if route == ("GET", "projects", "*", "events"):
-            return self.stream_events(pid)
+            return self.stream_events(pid, {"hello": True, "rev": int(lib.read(pid).get("rev", 0))})
         if route == ("POST", "projects", "*", "presence"):
             lib.dir(pid)
             lib.presence[pid] = {**self.body_json(), "ts": time.time()}
@@ -1047,16 +1062,16 @@ class Handler(BaseHTTPRequestHandler):
                                    "tools": str(tools) if tools else None})
         raise ApiError(HTTPStatus.NOT_FOUND, "unknown endpoint")
 
-    def stream_events(self, pid):
-        """Server-sent events: one message per save of this project."""
-        rev = int(self.lib.read(pid).get("rev", 0))
-        q = self.lib.subscribe(pid)
+    def stream_events(self, channel, hello):
+        """Server-sent events: one message per save of a project, or per
+        change to the project list on the ALL channel."""
+        q = self.lib.subscribe(channel)
         try:
             self.send_response(HTTPStatus.OK)
             self.send_header("Content-Type", "text/event-stream")
             self.send_header("Cache-Control", "no-store")
             self.end_headers()
-            self.wfile.write(f"data: {json.dumps({'hello': True, 'rev': rev})}\n\n".encode())
+            self.wfile.write(f"data: {json.dumps(hello)}\n\n".encode())
             while True:
                 try:
                     event = q.get(timeout=15)
@@ -1069,7 +1084,7 @@ class Handler(BaseHTTPRequestHandler):
         except (BrokenPipeError, ConnectionResetError, OSError):
             pass
         finally:
-            self.lib.unsubscribe(pid, q)
+            self.lib.unsubscribe(channel, q)
 
     def do_GET(self):
         self.handle_any("GET")

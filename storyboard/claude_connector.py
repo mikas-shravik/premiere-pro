@@ -31,11 +31,15 @@ MOVES = ["Static", "Push in", "Pull out", "Pan left", "Pan right", "Tilt up", "T
          "Truck right", "Tracking", "Orbit", "Crane up", "Crane down", "Handheld", "Zoom in", "Zoom out",
          "Crash zoom", "Drone", "FPV", "Whip pan", "Rack focus", "Dolly zoom"]
 TRANSITIONS = ["Cut", "Dissolve", "Fade in", "Fade out", "Match cut", "Smash cut", "Whip pan", "J-cut", "L-cut", "Wipe"]
+ASPECTS = {"16:9": (1920, 1080), "2.39:1": (1920, 804), "1.85:1": (1920, 1038), "9:16": (1080, 1920),
+           "4:5": (1080, 1350), "1:1": (1080, 1080), "4:3": (1440, 1080), "21:9": (2560, 1080)}
+FPS = ["23.976", "24", "25", "29.97", "30", "50", "59.94", "60"]
 SHOT_STATUS = {"idea": "Idea", "prompt": "Prompt ready", "generated": "Generated", "approved": "Approved", "edit": "In edit"}
 VERSION_STATUS = {"new": "Exploring", "rework": "Rework", "option": "Option", "picked": "Picked"}
 
 INSTRUCTIONS = """Storyboard is the user's storyboard and moodboard app for planning video shots. They are a video editor who generates shots with AI tools such as Higgsfield, then edits in Premiere Pro.
 
+- The user can have several projects. Tools work on the project open in Storyboard unless you name one. After create_project, pass the new project's name to later calls, or open it with open_project when the user wants to see it.
 - Shots are coded like SC01_SH020 (scene 1, shot 20). When the user says "this shot" or "the selected one", call get_selection.
 - Each shot has a version tree: first references are versions 1, 2, 3; variations made from version 1 are 1.1, 1.2, and so on. Exactly one version can be Picked, and it is the shot's frame.
 - The user circles, boxes or draws on images and attaches numbered notes saying what to change. Read them with get_feedback, and look at the marked-up image with view_images.
@@ -310,6 +314,71 @@ def tree_text(p, shot):
     for r in roots:
         walk(r, 0)
     return "\n".join(lines) or "(no versions yet)"
+
+
+# --- new projects (kept in step with app/js/store.js) -------------------------------
+
+TEMPLATES = {
+    "blank": (None, [("", "", 1)]),
+    "commercial": (2.5, [("Hook", "Grab attention in the first 2 seconds", 2), ("Problem", "The tension the product solves", 2),
+                         ("Product", "Hero shots, features in action", 4), ("Payoff", "Life with the product, emotion", 3),
+                         ("End card", "Logo, tagline, call to action", 1)]),
+    "music": (2, [("Intro", "", 2), ("Verse 1", "", 4), ("Chorus 1", "", 4), ("Verse 2", "", 4), ("Chorus 2", "", 4),
+                  ("Bridge", "", 3), ("Final chorus", "", 4), ("Outro", "", 2)]),
+    "short": (4, [("Act 1 · Setup", "World, character, what they want", 3), ("Inciting incident", "Everything changes", 2),
+                  ("Act 2 · Confrontation", "Obstacles escalate", 4), ("Climax", "The decisive moment", 3),
+                  ("Act 3 · Resolution", "New normal", 2)]),
+}
+
+
+def board(name, items):
+    return {"id": uid("bd_"), "name": name, "items": items, "links": [], "view": {"x": 0, "y": 0, "z": 1}}
+
+
+def starter_boards():
+    def note(x, y, text, color="yellow", w=220, h=150):
+        return {"id": uid("it_"), "type": "note", "x": x, "y": y, "w": w, "h": h, "text": text, "color": color}
+
+    def section(x, y, w, h, title):
+        return {"id": uid("it_"), "type": "section", "x": x, "y": y, "w": w, "h": h, "title": title}
+    return [
+        board("Look & feel", [
+            section(-40, -60, 760, 520, "Look & lighting"), section(760, -60, 520, 520, "Color palette"),
+            section(-40, 500, 760, 460, "Characters & wardrobe"), section(760, 500, 520, 460, "Locations"),
+            note(0, 0, "Drop reference stills, frames from films, Higgsfield generations… anything that nails the look.", "yellow", 260, 140),
+            note(800, 0, "Select an image → “Extract palette” to pull its colors here.", "blue", 240, 120)]),
+        board("Ideas", [
+            note(0, 0, "Core idea in one line", "orange", 240, 120), note(320, -80, "What should the audience feel?", "pink"),
+            note(320, 120, "Key visual moment", "purple"), note(620, 20, "Ending / payoff", "green")]),
+    ]
+
+
+def settings_from(args, base):
+    """Apply the settings fields of a tool call to base; returns the names changed."""
+    changed = []
+    if args.get("aspect"):
+        if args["aspect"] not in ASPECTS:
+            raise ToolError(f"Aspect must be one of {', '.join(ASPECTS)}.")
+        base["aspect"] = args["aspect"]
+        base["width"], base["height"] = ASPECTS[args["aspect"]]
+        changed.append("aspect")
+    if args.get("fps"):
+        if str(args["fps"]) not in FPS:
+            raise ToolError(f"Frame rate must be one of {', '.join(FPS)}.")
+        base["fps"] = str(args["fps"])
+        changed.append("fps")
+    if args.get("duration"):
+        base["duration"] = max(0.5, round(float(args["duration"]), 2))
+        changed.append("default shot length")
+    for k in ("look", "negative"):
+        if args.get(k) is not None:
+            base[k] = args[k]
+            changed.append(k)
+    return changed
+
+
+def open_in_app(pid):
+    return http("POST", "/api/open", {"project": pid}).get("windows", 0)
 
 
 # --- media ---------------------------------------------------------------------
@@ -775,17 +844,64 @@ def t_add_moodboard_notes(args):
     return edit(pid, fn, f"added {len(texts)} moodboard note{'s' if len(texts) != 1 else ''}")
 
 
-def t_set_project_look(args):
+def t_create_project(args):
+    name = (args.get("name") or "").strip()
+    if not name:
+        raise ToolError("A new project needs a name.")
+    tpl = args.get("template") or "blank"
+    if tpl not in TEMPLATES:
+        raise ToolError(f"Template must be one of {', '.join(TEMPLATES)}.")
+    tpl_duration, tpl_scenes = TEMPLATES[tpl]
+    settings = {"aspect": "16:9", "fps": "24", "width": 1920, "height": 1080, "duration": tpl_duration or 3,
+                "look": "", "negative": "", "takes": 1, "music": None}
+    settings_from(args, settings)
+    p = {"version": 1, "settings": settings, "scenes": [], "boards": starter_boards(), "versions": []}
+    specs = args.get("scenes") or [{"title": t, "synopsis": syn, "shots": [{}] * n} for t, syn, n in tpl_scenes]
+    for i, spec in enumerate(specs):
+        scene = {"id": uid("sc_"), "number": i + 1, "title": spec.get("title", ""), "synopsis": spec.get("synopsis", ""),
+                 "collapsed": False, "shots": []}
+        for k, shot_spec in enumerate(spec.get("shots") or [{}]):
+            shot = new_shot(p, shot_fields(shot_spec))
+            shot["number"] = (k + 1) * 10
+            scene["shots"].append(shot)
+        p["scenes"].append(scene)
+    made = http("POST", "/api/projects", {"name": name, "project": p})
+    shots = sum(len(sc["shots"]) for sc in p["scenes"])
+    msg = f"Created project “{made['name']}” (id {made['id']}): {len(p['scenes'])} scene(s), {shots} shot(s), {settings['aspect']} at {settings['fps']} fps."
+    if args.get("open"):
+        msg += " It's open in Storyboard now." if open_in_app(made["id"]) else \
+            " Storyboard isn't open in a browser window, so the user will find it on the home screen."
+    else:
+        msg += f" Pass project “{made['name']}” to other tools to work on it (it isn't the open project)."
+    return msg
+
+
+def t_update_project(args):
     pid = resolve_project(args.get("project"))
+    new_name = (args.get("name") or "").strip()
 
     def fn(p, touched):
-        changed = []
-        for k in ("look", "negative"):
-            if args.get(k) is not None:
-                p["settings"][k] = args[k]
-                changed.append(k)
-        return f"Updated the project {' and '.join(changed) or 'settings'}."
-    return edit(pid, fn, "updated the project look")
+        changed = settings_from(args, p["settings"])
+        if new_name:
+            old = p.get("name")
+            p["name"] = new_name[:120]
+            changed.insert(0, f"name (was “{old}”)")
+        if not changed:
+            raise ToolError("Nothing to change. Pass a new name or a setting.")
+        return f"Updated project “{p['name']}”: {', '.join(changed)}."
+    summary = f"renamed the project to “{new_name}”" if new_name else "changed the project settings"
+    return edit(pid, fn, summary)
+
+
+def t_open_project(args):
+    if not args.get("project"):
+        raise ToolError("Name the project to open (see list_projects).")
+    pid = resolve_project(args["project"])
+    name = load(pid).get("name")
+    if not open_in_app(pid):
+        return (f"Storyboard isn't open in a browser window. Ask the user to open http://127.0.0.1:8765 "
+                f"(or the Storyboard app) and pick “{name}”.")
+    return f"Opened “{name}” in Storyboard."
 
 
 def t_add_media_to_shot(args):
@@ -900,6 +1016,13 @@ def t_add_media_to_moodboard(args):
 
 
 PROJECT = {"type": "string", "description": "Project name or id. Omit to use the project open in Storyboard."}
+PROJECT_SETTINGS = {
+    "aspect": {"type": "string", "enum": list(ASPECTS)},
+    "fps": {"type": "string", "enum": FPS},
+    "duration": {"type": "number", "description": "Default length of new shots, in seconds."},
+    "look": {"type": "string", "description": "Look/style prefix added to every prompt."},
+    "negative": {"type": "string", "description": "Default negative prompt."},
+}
 SOURCES = {"type": "array", "items": {"type": "string"},
            "description": "Web links (https://…) to images or clips, or full paths on this computer to files or folders "
                           "(/Users/…/frame.png, ~/Downloads/renders/). A folder adds every image and clip in it, by name."}
@@ -995,8 +1118,20 @@ TOOLS = [
           "board": {"type": "string", "description": "Moodboard name. Default: the first board."},
           "section": {"type": "string", "description": "Section title to place them in; it grows to fit."}},
          ["sources"], fn=t_add_media_to_moodboard, readonly=False),
-    tool("set_project_look", "Set the project's look/style prefix (added to every prompt) and default negative prompt.",
-         {"project": PROJECT, "look": {"type": "string"}, "negative": {"type": "string"}}, fn=t_set_project_look, readonly=False),
+    tool("create_project", "Create a new Storyboard project, from a template or with your own scenes and shots (e.g. broken down from a script).",
+         {"name": {"type": "string"},
+          "template": {"type": "string", "enum": list(TEMPLATES), "description": "Starting scenes when you don't pass scenes: blank, commercial (30-second spot), music (music video), short (short film)."},
+          "scenes": {"type": "array", "description": "Scenes in order; overrides the template's.", "items": {"type": "object", "properties": {
+              "title": {"type": "string"}, "synopsis": {"type": "string"},
+              "shots": {"type": "array", "items": {"type": "object", "properties": SHOT_PROPS}}}}},
+          **PROJECT_SETTINGS,
+          "open": {"type": "boolean", "description": "Show it in the user's Storyboard window now."}},
+         ["name"], fn=t_create_project, readonly=False),
+    tool("update_project", "Rename a project or change its settings: aspect ratio, frame rate, default shot length, look/style prefix (added to every prompt) and default negative prompt.",
+         {"project": PROJECT, "name": {"type": "string", "description": "New name."}, **PROJECT_SETTINGS},
+         fn=t_update_project, readonly=False),
+    tool("open_project", "Show a project in the user's Storyboard window.",
+         {"project": {"type": "string", "description": "Project name or id."}}, ["project"], fn=t_open_project, readonly=False),
 ]
 BY_NAME = {t["name"]: t for t in TOOLS}
 

@@ -13,13 +13,13 @@ import {
   pickFiles, toast,
 } from './ui.js';
 
-const GAP_X = 22, GAP_Y = 56, LANE_GAP = 44, SCENE_GAP = 120;
+const GAP_X = 22, GAP_Y = 56, LANE_GAP = 44, SCENE_GAP = 120, MIN_SCENE_W = 300;
 const fmtDate = (ms) => (ms ? new Date(ms).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) : '');
 
 export function mount(host, { store, app, opts }) {
   const pid = store.id;
-  const prefsKey = `storyboard.versions.${pid}`;
-  let prefs = { scene: '', showEmpty: false, view: null };
+  const prefsKey = `storyboard.tree.${pid}`;
+  let prefs = { scene: '', hideEmpty: false, view: null };
   try { prefs = { ...prefs, ...JSON.parse(localStorage.getItem(prefsKey) || '{}') }; } catch { /* ignore */ }
   const savePrefs = () => { try { localStorage.setItem(prefsKey, JSON.stringify(prefs)); } catch { /* ignore */ } };
   let view = prefs.view || { x: 60, y: 120, z: 0.8 };
@@ -33,8 +33,8 @@ export function mount(host, { store, app, opts }) {
   const svg = h('svg.v-edges', { svg: true, style: { left: '-50000px', top: '-50000px', width: '100000px', height: '100000px' } }, edgeG);
   const world = h('div.mb-world', null, svg);
   const canvas = h('div.mb-canvas.v-canvas', { tabIndex: 0 }, dots, world);
-  const sceneSel = h('select.input', { style: { height: '30px', width: '190px' }, onchange: (e) => { prefs.scene = e.target.value; savePrefs(); render(); fit(); } });
-  const emptyToggle = h('label.check', { title: 'Also show shots that have no versions yet' }, h('input', { type: 'checkbox', checked: prefs.showEmpty, onchange: (e) => { prefs.showEmpty = e.target.checked; savePrefs(); render(); fit(); } }), 'Show empty shots');
+  const sceneSel = h('select.input', { style: { height: '30px', width: '190px' }, onchange: (e) => { prefs.scene = e.target.value; savePrefs(); render(); start(); } });
+  const emptyToggle = h('label.check', { title: 'Hide shots that have no versions yet' }, h('input', { type: 'checkbox', checked: prefs.hideEmpty, onchange: (e) => { prefs.hideEmpty = e.target.checked; savePrefs(); render(); start(); } }), 'Only shots with versions');
   const topbar = h('div.v-topbar', null, icon('tree', 15), h('b', null, 'Versions'), sceneSel, emptyToggle,
     h('span.faint.v-legend', null, VSTATUS.map((s) => h('span', { title: s.hint }, h('i', { style: { background: s.color } }), s.label))));
   const zoomLabel = h('button.zoom-label', { type: 'button', title: 'Zoom to 100%', onclick: () => zoomTo(1) }, '100%');
@@ -82,22 +82,29 @@ export function mount(host, { store, app, opts }) {
     let x = 0;
     for (const scene of p.scenes) {
       if (prefs.scene && prefs.scene !== scene.id) continue;
-      const x0 = x;
-      let count = 0, vcount = 0;
+      const lanes = [];
       for (const shot of scene.shots) {
         const all = versionsOf(p, shot.id);
-        // Shots without versions stay out of the way, except the one you came to work on.
+        // "Only shots with versions" hides the rest, except the one you came to work on.
         const focused = sel && (sel.id === shot.id || (sel.kind === 'node' && store.version(sel.id)?.shot === shot.id));
-        if (!prefs.showEmpty && !all.length && !focused) continue;
-        count++;
-        vcount += all.length;
+        if (prefs.hideEmpty && !all.length && !focused) continue;
         const roots = all.filter((v) => !v.parent || !all.some((o) => o.id === v.parent)).sort((a, b) => a.created - b.created);
+        const rootsW = roots.reduce((s, r) => s + width(r), 0) + GAP_X * Math.max(0, roots.length - 1);
+        lanes.push({ shot, all, roots, rootsW, laneW: Math.max(w, rootsW) });
+      }
+      if (!lanes.length) continue;
+      // Narrow scenes get room for their title; their lanes sit centred under it.
+      const lanesW = lanes.reduce((s, l) => s + l.laneW, 0) + LANE_GAP * (lanes.length - 1);
+      const sceneW = Math.max(MIN_SCENE_W, lanesW);
+      const x0 = x;
+      x += (sceneW - lanesW) / 2;
+      let vcount = 0;
+      for (const { shot, all, roots, rootsW, laneW } of lanes) {
+        vcount += all.length;
         // The path from the first reference to the picked version is highlighted.
         const lineage = new Set();
         let cur = all.find((v) => v.status === 'picked');
         while (cur) { lineage.add(cur.id); cur = all.find((v) => v.id === cur.parent); }
-        const rootsW = roots.reduce((s, r) => s + width(r), 0) + GAP_X * Math.max(0, roots.length - 1);
-        const laneW = Math.max(w, rootsW);
         const sx = x + laneW / 2 - w / 2;
         boxes.set(shot.id, { kind: 'shot', id: shot.id, x: sx, y: 0, w, h: shotH, shot, scene, total: all.length, open: all.reduce((n, v) => n + openMarks(v).length, 0) });
         const rowY = shotH + GAP_Y;
@@ -114,10 +121,8 @@ export function mount(host, { store, app, opts }) {
         }
         x += laneW + LANE_GAP;
       }
-      if (count) {
-        scenes.push({ id: scene.id, scene, x: x0, w: x - LANE_GAP - x0, count, vcount });
-        x += SCENE_GAP - LANE_GAP;
-      } else x = x0;
+      scenes.push({ id: scene.id, scene, x: x0, w: sceneW, count: lanes.length, vcount });
+      x = x0 + sceneW + SCENE_GAP;
     }
     let x1 = Infinity, y1 = -90, x2 = -Infinity, y2 = 0;
     for (const b of boxes.values()) { x1 = Math.min(x1, b.x); x2 = Math.max(x2, b.x + b.w); y2 = Math.max(y2, b.y + b.h); }
@@ -147,7 +152,7 @@ export function mount(host, { store, app, opts }) {
     };
     const { th } = sizes();
     for (const s of L.scenes) {
-      keep(`scene:${s.id}`, JSON.stringify([s.scene.number, s.scene.title, s.count, s.vcount]), () => h('div.v-scene', { dataset: { scene: s.id } },
+      keep(`scene:${s.id}`, JSON.stringify([s.scene.number, s.scene.title, s.count, s.vcount]), () => h('div.v-scene', { dataset: { scene: s.id }, title: s.scene.title || '' },
         h('span.scene-num', null, `SC${String(s.scene.number).padStart(2, '0')}`), h('b', null, s.scene.title || 'Untitled scene'),
         h('span.faint', null, `${s.count} shot${s.count === 1 ? '' : 's'} · ${s.vcount} version${s.vcount === 1 ? '' : 's'}`)), { x: s.x, y: -78, w: s.w });
     }
@@ -185,8 +190,8 @@ export function mount(host, { store, app, opts }) {
     }));
     if (!L.boxes.size) {
       if (!root.querySelector('.v-empty')) {
-        stageWrap.append(h('div.v-empty', null, h('h3', null, 'No versions yet'),
-          h('p.muted', null, 'Give a shot a frame on the Storyboard tab, or tick “Show empty shots” and drop references onto a shot here.')));
+        stageWrap.append(h('div.v-empty', null, h('h3', null, prefs.hideEmpty ? 'No versions yet' : 'No shots yet'),
+          h('p.muted', null, prefs.hideEmpty ? 'Untick “Only shots with versions” to drop references onto any shot.' : 'Add shots on the Storyboard tab and they appear here.')));
       }
     } else root.querySelector('.v-empty')?.remove();
     renderPanel();
@@ -219,6 +224,18 @@ export function mount(host, { store, app, opts }) {
     const pad = 70;
     const z = clamp(Math.min((r.width - pad * 2) / b.w, (r.height - pad * 2 - 50) / b.h), 0.08, 1.1);
     view = { z, x: r.width / 2 - (b.x + b.w / 2) * z, y: (r.height - 40) / 2 - (b.y + b.h / 2) * z + 20 };
+    applyView();
+  }
+  // Big projects don't fit at a readable size, so start at the first scene
+  // and let the rest scroll in from the right (F still fits everything).
+  function start(b = layoutCache.bounds) {
+    const r = canvas.getBoundingClientRect();
+    if (!b || !r.width) return applyView();
+    const pad = 70;
+    const fitsZ = Math.min((r.width - pad * 2) / b.w, (r.height - pad * 2 - 50) / b.h);
+    if (fitsZ >= 0.5) return fit(b);
+    const z = clamp((r.height - pad * 2 - 50) / b.h, 0.5, 0.9);
+    view = { z, x: pad - b.x * z, y: (r.height - 40) / 2 - (b.y + b.h / 2) * z + 20 };
     applyView();
   }
   function focusShot(shotId) {
@@ -570,7 +587,7 @@ export function mount(host, { store, app, opts }) {
   requestAnimationFrame(() => {
     if (opts?.shot || opts?.version || (!prefs.view && sel)) focusShot(sel?.kind === 'node' ? store.version(sel.id).shot : sel.id);
     else if (prefs.view) applyView();
-    else fit();
+    else start();
   });
 
   return {

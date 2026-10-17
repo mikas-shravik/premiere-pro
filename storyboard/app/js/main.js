@@ -136,7 +136,11 @@ function renderShell() {
   syncUndo();
   store.on('change', (ev) => {
     syncUndo();
-    if ((ev.source === 'undo' || ev.source === 'redo' || ev.source === 'remote') && document.activeElement !== name) name.value = store.p.name;
+    if ((ev.source === 'undo' || ev.source === 'redo' || ev.source === 'remote') && document.activeElement !== name) {
+      name.value = store.p.name;
+      name.style.width = `${Math.min(320, Math.max(80, name.value.length * 8.5 + 24))}px`;
+      document.title = `${store.p.name} · Storyboard`;
+    }
     if (ev.source === 'remote') announceRemote(ev);
   });
   store.on('status', ({ status, message }) => {
@@ -191,6 +195,7 @@ async function openClaude() {
     'Rewrite the prompts in scene 2 so they all match the project look.',
     'Look at the frames in scene 1. Anything breaking continuity?',
     'Add the images in ~/Downloads/renders to the selected shot as variations of v1.',
+    'Start a new 9:16 project from this script, one scene per beat, and open it.',
   ];
   modal({
     title: 'Connect Claude', wide: true,
@@ -438,6 +443,19 @@ addEventListener('dragover', (e) => e.preventDefault());
 addEventListener('drop', (e) => e.preventDefault());
 
 route();
+
+// Project-list events: the home screen updates when Claude (or another
+// window) creates, renames or deletes a project, and Claude can bring a
+// project up in this window.
+if (typeof EventSource !== 'undefined') {
+  let homeTimer = 0;
+  new EventSource('/api/events').onmessage = (e) => {
+    let ev;
+    try { ev = JSON.parse(e.data); } catch { return; }
+    if (ev.open && app.store?.id !== ev.open) location.hash = `#/p/${ev.open}/board`;
+    if (ev.projects && !app.store) { clearTimeout(homeTimer); homeTimer = setTimeout(() => { if (!app.store) renderHome(); }, 300); }
+  };
+}
 
 // The offline page (served by sw.js when the server is down, e.g. from the
 // installed Chrome app) shows this command so Storyboard is easy to restart.
