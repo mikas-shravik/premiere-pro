@@ -784,8 +784,10 @@ BY_NAME = {t["name"]: t for t in TOOLS}
 # --- MCP over stdio -------------------------------------------------------------
 
 def send(obj):
-    sys.stdout.write(json.dumps(obj, ensure_ascii=False) + "\n")
-    sys.stdout.flush()
+    # ASCII-only JSON on the raw byte stream: works whatever locale the
+    # Claude app starts us with.
+    sys.stdout.buffer.write((json.dumps(obj) + "\n").encode("ascii"))
+    sys.stdout.buffer.flush()
 
 
 def call(name, args):
@@ -825,8 +827,10 @@ def handle(msg):
 
 
 def main():
-    for line in sys.stdin:
-        line = line.strip()
+    sys.stderr.write(f"Storyboard connector ready (Python {sys.version.split()[0]}, talking to {BASE})\n")
+    sys.stderr.flush()
+    for raw in sys.stdin.buffer:
+        line = raw.decode("utf-8", "replace").strip()
         if not line:
             continue
         try:

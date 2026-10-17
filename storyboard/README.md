@@ -151,8 +151,17 @@ extra cost.
 3. Quit Claude completely (⌘Q) and open it again. If macOS asks whether Claude may access a folder, click **Allow**.
 
 Keep Storyboard running while you chat. Claude works on the project you have
-open, and it knows which shot or version you've selected. If you move the
-Storyboard folder, click Connect again.
+open, and it knows which shot or version you've selected.
+
+Connect copies the connector to `~/Library/Application Support/Storyboard`.
+macOS doesn't let the Claude app run scripts kept in Downloads, Documents or
+on the Desktop, and the connector would quit at once with "Server
+disconnected". Storyboard keeps that copy up to date each time it starts.
+
+**If Claude still says "Server disconnected":** in Claude, open **Settings ›
+Developer › storyboard** and click **Open Logs Folder**. The last lines of
+`mcp-server-storyboard.log` say what went wrong. A healthy start logs
+"Storyboard connector ready".
 
 **Things to ask:**
 

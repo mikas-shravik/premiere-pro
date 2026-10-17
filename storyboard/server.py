@@ -44,7 +44,7 @@ from urllib.parse import parse_qs, quote, unquote, urlparse
 from xml.sax.saxutils import escape
 
 HERE = Path(__file__).resolve().parent
-CONNECTOR = HERE / "claude_connector.py"
+CONNECTOR = HERE / "claude_connector.py"  # copied to connector_home() when connecting Claude
 APP_DIR = HERE / "app"
 AI_FOOTAGE = HERE.parent / "ai-footage"
 DEFAULT_TAKES = AI_FOOTAGE / "incoming"
@@ -484,17 +484,47 @@ def claude_app_found() -> bool:
     return claude_config_path().parent.exists()
 
 
-def claude_status() -> dict:
+def connector_home() -> Path:
+    """Where the connector lives for Claude. Not Downloads/Documents/Desktop:
+    macOS won't let the Claude app read scripts there, so the connector
+    would quit as soon as Claude started it."""
+    if sys.platform == "darwin":
+        return Path.home() / "Library" / "Application Support" / "Storyboard"
+    if os.name == "nt":
+        return Path(os.environ.get("APPDATA", Path.home())) / "Storyboard"
+    return Path.home() / ".local" / "share" / "storyboard"
+
+
+def installed_connector() -> Path:
+    return connector_home() / "claude_connector.py"
+
+
+def claude_entry():
     cfg = claude_config_path()
-    entry = None
     if cfg.is_file():
         try:
-            entry = json.loads(cfg.read_text(encoding="utf-8")).get("mcpServers", {}).get("storyboard")
+            return json.loads(cfg.read_text(encoding="utf-8")).get("mcpServers", {}).get("storyboard")
         except (OSError, ValueError):
             pass
-    linked = bool(entry) and str(CONNECTOR) in (entry.get("args") or [])
-    return {"installed": linked, "appFound": claude_app_found(), "config": str(cfg),
-            "connector": str(CONNECTOR)}
+    return None
+
+
+def claude_status() -> dict:
+    entry = claude_entry()
+    target = installed_connector()
+    linked = bool(entry) and str(target) in (entry.get("args") or []) and target.is_file()
+    return {"installed": linked, "outdated": bool(entry) and not linked, "appFound": claude_app_found(),
+            "config": str(claude_config_path()), "connector": str(target)}
+
+
+def refresh_connector() -> None:
+    """Keep the copy Claude runs in step with this version of Storyboard."""
+    target = installed_connector()
+    try:
+        if target.is_file() and target.read_bytes() != CONNECTOR.read_bytes():
+            shutil.copy2(CONNECTOR, target)
+    except OSError:
+        pass
 
 
 def claude_install(port: int) -> dict:
@@ -508,9 +538,12 @@ def claude_install(port: int) -> dict:
         except ValueError:
             raise ApiError(HTTPStatus.CONFLICT, f"Claude's settings file isn't valid JSON: {cfg}")
         shutil.copy2(cfg, cfg.with_name(cfg.name + ".bak"))
+    target = installed_connector()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(CONNECTOR, target)
     data.setdefault("mcpServers", {})["storyboard"] = {
         "command": sys.executable,
-        "args": [str(CONNECTOR)],
+        "args": [str(target)],
         "env": {"STORYBOARD_URL": f"http://127.0.0.1:{port}"},
     }
     cfg.parent.mkdir(parents=True, exist_ok=True)
@@ -897,6 +930,16 @@ def main():
     except OSError as e:
         sys.exit(f"Port {a.port} is busy ({e}). Try: python3 server.py --port 8777")
     httpd.daemon_threads = True
+    # Claude set up by an older Storyboard runs the connector from this folder,
+    # which macOS may block; move it to the safe copy and keep that current.
+    entry = claude_entry()
+    if entry and str(installed_connector()) not in (entry.get("args") or []):
+        try:
+            claude_install(a.port)
+            print("Updated the Claude connector. Quit and reopen the Claude app to use it.")
+        except (ApiError, OSError) as e:
+            print(f"Couldn't update the Claude connector: {e}")
+    refresh_connector()
     print(f"Storyboard running at {url}\n  projects: {Handler.lib.root}\n"
           f"  takes:    {Handler.lib.takes}\nKeep this window open. Press Ctrl+C to stop.")
     if not a.no_browser:
