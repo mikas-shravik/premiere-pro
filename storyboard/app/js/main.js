@@ -261,7 +261,7 @@ async function renderHome() {
   try {
     data = await api.projects();
   } catch (e) {
-    root.replaceChildren(h('div.empty-home', null, h('h2', null, 'Storyboard isn’t running'), h('p', null, 'Start it with Storyboard.app or by double-clicking Storyboard.command, then reload this page.')));
+    root.replaceChildren(h('div.empty-home', null, h('h2', null, 'Storyboard isn’t running'), h('p', null, 'Start it again the way you started it before (the python3 command in Terminal), then reload this page.')));
     return;
   }
   const cards = data.projects.map((p) => {
@@ -294,7 +294,7 @@ async function renderHome() {
 }
 
 async function quitServer() {
-  if (!(await confirmDialog('This stops the Storyboard server on this computer. Your projects are already saved. Open Storyboard.app (or Storyboard.command) to start it again.', { title: 'Quit Storyboard?', ok: 'Quit' }))) return;
+  if (!(await confirmDialog('This stops the Storyboard server on this computer. Your projects are already saved. To start it again, run the same python3 command in Terminal.', { title: 'Quit Storyboard?', ok: 'Quit' }))) return;
   await api.shutdown().catch(() => {});
   root.replaceChildren(h('div.stopped', null, h('div', null, h('div.brand-mark', { style: { margin: '0 auto' } }, icon('film', 22)),
     h('h2', null, 'Storyboard has stopped'), h('p', null, 'You can close this tab.'))));
@@ -379,3 +379,8 @@ addEventListener('dragover', (e) => e.preventDefault());
 addEventListener('drop', (e) => e.preventDefault());
 
 route();
+
+// The offline page (served by sw.js when the server is down, e.g. from the
+// installed Chrome app) shows this command so Storyboard is easy to restart.
+api.ping().then((r) => { try { if (r.command) localStorage.setItem('storyboard.command', r.command); } catch { /* private mode */ } }, () => {});
+if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});

@@ -23,6 +23,7 @@ import mimetypes
 import os
 import re
 import secrets
+import shlex
 import shutil
 import subprocess
 import sys
@@ -598,7 +599,10 @@ class Handler(BaseHTTPRequestHandler):
         pid = parts[1] if len(parts) > 1 else None
 
         if route == ("GET", "ping"):
-            return self.send_json({"ok": True, "data": str(lib.root), "takes": str(lib.takes)})
+            # `command` is shown by the Chrome app's offline page to restart us.
+            command = f"python3 {shlex.quote(str(HERE / 'server.py'))} --no-browser"
+            return self.send_json({"ok": True, "data": str(lib.root), "takes": str(lib.takes),
+                                   "command": command})
         if route == ("POST", "shutdown"):
             self.send_json({"ok": True})
             threading.Thread(target=self.server.shutdown, daemon=True).start()

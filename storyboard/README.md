@@ -59,8 +59,15 @@ at the bottom of the home screen. If you move the folder, build the app again.
 (another projects folder) and `--no-browser`.
 
 Storyboard runs at **http://127.0.0.1:8765**. Chrome, Safari and Arc all work.
-In Chrome you can also choose **⋮ › Cast, save and share › Install page as app**
-to give Storyboard its own window.
+
+**As a Chrome app.** While Storyboard is running, click Chrome's install icon in
+the address bar (or **⋮ › Cast, save and share › Install page as app**).
+Storyboard gets its own window and an icon in the Dock, Launchpad and
+Applications › Chrome Apps. The app is a window onto Storyboard, so Storyboard
+itself still has to be running. If it isn't (after a restart, say), the window
+shows the one line to paste into Terminal and reloads itself once Storyboard
+starts. That line adds `--no-browser`, so starting it doesn't also open a
+browser tab.
 
 ## A typical Higgsfield workflow
 

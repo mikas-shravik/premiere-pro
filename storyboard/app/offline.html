@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Storyboard isn’t running</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; }
+  body { background: #111113; color: #ececf0; font: 14px/1.55 -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif; display: grid; place-items: center; padding: 24px; -webkit-font-smoothing: antialiased; }
+  main { width: min(560px, 100%); }
+  .mark { width: 44px; height: 44px; border-radius: 10px; }
+  h1 { font-size: 22px; letter-spacing: -0.02em; margin: 18px 0 6px; }
+  p { margin: 0 0 12px; color: #9b9ba5; }
+  ol { margin: 22px 0 0; padding: 0; list-style: none; counter-reset: step; display: grid; gap: 16px; }
+  li { counter-increment: step; display: grid; grid-template-columns: 28px 1fr; gap: 12px; align-items: start; }
+  li::before { content: counter(step); width: 28px; height: 28px; border-radius: 50%; background: #29292e; color: #ffb224; font-weight: 700; display: grid; place-items: center; font-size: 13px; }
+  kbd { font: 12px "SF Mono", ui-monospace, Menlo, monospace; background: #29292e; border: 1px solid #3a3a42; border-bottom-width: 2px; border-radius: 4px; padding: 0 5px; color: #ececf0; }
+  .cmd { margin-top: 8px; display: flex; gap: 8px; align-items: stretch; }
+  code { flex: 1; min-width: 0; font: 12.5px/1.5 "SF Mono", ui-monospace, Menlo, monospace; background: #0b0b0d; border: 1px solid #2e2e35; border-radius: 8px; padding: 9px 12px; overflow-wrap: anywhere; color: #d6d6dc; }
+  button { font: inherit; font-weight: 600; border: 0; border-radius: 8px; padding: 0 16px; background: #ffb224; color: #1d1404; cursor: pointer; white-space: nowrap; }
+  button:hover { background: #ffc04d; }
+  .wait { margin-top: 26px; display: flex; align-items: center; gap: 10px; color: #686871; font-size: 13px; }
+  .spin { width: 14px; height: 14px; border-radius: 50%; border: 2px solid #2e2e35; border-top-color: #ffb224; animation: spin 0.9s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+</style>
+</head>
+<body>
+<main>
+  <svg class="mark" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" aria-hidden="true">
+  <rect width="512" height="512" rx="112" fill="#18181b"/>
+  <rect x="88" y="128" width="148" height="104" rx="14" fill="#ffb224"/>
+  <rect x="276" y="128" width="148" height="104" rx="14" fill="#3a3a42"/>
+  <rect x="88" y="280" width="148" height="104" rx="14" fill="#3a3a42"/>
+  <rect x="276" y="280" width="148" height="104" rx="14" fill="#3a3a42"/>
+  <path d="M332 306v52l44-26z" fill="#ffb224"/>
+</svg>
+  <h1>Storyboard isn’t running</h1>
+  <p>Your projects are safe. Storyboard just needs to be started on this Mac, for example after a restart or after closing its Terminal window.</p>
+  <ol>
+    <li><div>Open Terminal: press <kbd>⌘</kbd> <kbd>Space</kbd>, type <b>Terminal</b>, press <kbd>Return</kbd>.</div></li>
+    <li id="paste"><div>Paste this line and press <kbd>Return</kbd>:
+      <div class="cmd"><code id="cmd"></code><button id="copy" type="button">Copy</button></div></div></li>
+    <li><div>Leave the Terminal window open while you work. Closing it stops Storyboard.</div></li>
+  </ol>
+  <div class="wait"><i class="spin"></i><span>This window reloads by itself as soon as Storyboard starts.</span></div>
+</main>
+<script>
+  let cmd = '';
+  try { cmd = localStorage.getItem('storyboard.command') || ''; } catch (e) { /* private mode */ }
+  const code = document.getElementById('cmd');
+  if (cmd) {
+    code.textContent = cmd;
+  } else {
+    document.getElementById('paste').innerHTML = '<div>Type <b>python3</b> and a space, drag <b>server.py</b> from your Storyboard folder onto the Terminal window, then press <kbd>Return</kbd>.</div>';
+  }
+  document.getElementById('copy')?.addEventListener('click', async (e) => {
+    try { await navigator.clipboard.writeText(cmd); } catch (err) {
+      const r = document.createRange(); r.selectNodeContents(code);
+      getSelection().removeAllRanges(); getSelection().addRange(r); document.execCommand('copy');
+    }
+    e.target.textContent = 'Copied';
+    setTimeout(() => { e.target.textContent = 'Copy'; }, 1500);
+  });
+  setInterval(() => {
+    fetch('/api/ping', { cache: 'no-store' }).then((r) => { if (r.ok) location.reload(); }, () => {});
+  }, 2000);
+</script>
+</body>
+</html>
